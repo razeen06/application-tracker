@@ -35,7 +35,6 @@ def login():
         return "Google OAuth is not configured. Check your .env file.", 500
 
     redirect_uri = url_for("main_routes.auth_google_callback", _external=True)
-    print(f"[DEBUG] redirect_uri = {redirect_uri}", flush=True)  # TODO: remove after confirming this in Render's logs
     return oauth.google.authorize_redirect(redirect_uri)
 
 

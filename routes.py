@@ -2,6 +2,7 @@ from functools import wraps
 
 from flask import Blueprint, render_template, redirect, session, url_for, current_app, jsonify
 from authlib.integrations.flask_client import OAuth
+from authlib.integrations.base_client.errors import OAuthError
 
 from models import db, User
 
@@ -40,7 +41,15 @@ def login():
 
 @main_routes.route("/auth/google/callback")
 def auth_google_callback():
-    token = oauth.google.authorize_access_token()
+    try:
+        token = oauth.google.authorize_access_token()
+    except OAuthError:
+        # A stale or replayed callback (e.g. the browser retrying an old
+        # /auth/google/callback URL, or Google's silent prompt=none re-auth
+        # firing after the state was already consumed) fails CSRF state
+        # matching. That's expected in those cases, not a real error -- send
+        # the user back to start a fresh login instead of a raw 500.
+        return redirect(url_for("main_routes.home"))
 
     user_info = token.get("userinfo")
 

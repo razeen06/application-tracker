@@ -7,7 +7,7 @@ import os
 from routes import main_routes, oauth
 from api import api_routes
 from constants import GOOGLE_DISCOVERY_URL
-from models import db
+from models import db, migrate
 
 load_dotenv()
 
@@ -65,6 +65,7 @@ def create_app():
 
     oauth.init_app(app)
     db.init_app(app)
+    migrate.init_app(app, db)
 
     if google_client_id and google_client_secret:
         oauth.register(
@@ -92,9 +93,6 @@ def create_app():
 
     app.register_blueprint(main_routes)
     app.register_blueprint(api_routes)
-
-    with app.app_context():
-        db.create_all()
 
     return app
 

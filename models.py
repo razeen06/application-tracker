@@ -4,8 +4,10 @@ from datetime import date
 from enum import Enum
 
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 
 db = SQLAlchemy()
+migrate = Migrate()
 
 
 class ApplicationStatus(Enum):

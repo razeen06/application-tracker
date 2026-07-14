@@ -63,6 +63,19 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"] = _database_uri()
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+    # Render's Postgres (like most managed Postgres) silently drops idle
+    # connections after some idle period. Without pool_pre_ping, SQLAlchemy
+    # hands out a dead pooled connection on the next request and the query
+    # fails with an uncaught OperationalError -- a 500 that only happens
+    # "sometimes," right after the app/connection has been idle for a while.
+    # pool_pre_ping tests the connection with a cheap query first and
+    # transparently reconnects if it's dead; pool_recycle forces connections
+    # to be replaced before they get old enough to be at risk.
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 280,
+    }
+
     oauth.init_app(app)
     db.init_app(app)
     migrate.init_app(app, db)

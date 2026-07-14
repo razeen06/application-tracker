@@ -3,6 +3,7 @@ from functools import wraps
 from flask import Blueprint, render_template, redirect, session, url_for, current_app, jsonify
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import OAuthError
+from sqlalchemy.exc import IntegrityError
 
 from models import db, User
 
@@ -71,10 +72,18 @@ def auth_google_callback():
         user = User(email=user_email, name=user_name)
         user.generate_api_token()
         db.session.add(user)
+
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # Two concurrent first-time logins for the same brand-new email
+            # (double-click, retried request) both raced past the check
+            # above -- the other one won, so just use the row it created.
+            db.session.rollback()
+            user = User.query.filter_by(email=user_email).first()
     else:
         user.name = user_name
-
-    db.session.commit()
+        db.session.commit()
 
     return redirect(url_for("main_routes.dashboard"))
 

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Application Tracker</title>
+</head>
+<body>
+    <section class="landing-page">
+        <h1>Application Tracker</h1>
+        <p>Sign in to access your dashboard.</p>
+
+        {% if oauth_ready %}
+            <a href="/login" class="google-login-button">
+                Sign in with Google
+            </a>
+        {% else %}
+            <p class="warning">
+                Google OAuth is not configured. Check your .env file.
+            </p>
+        {% endif %}
+    </section>
+</body>
+</html>

@@ -6,44 +6,28 @@
 <title>Dashboard - Application Tracker</title>
 <style>
   :root {
-    color-scheme: light;
-    --page: #f9f9f7;
-    --surface: #fcfcfb;
-    --text-primary: #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted: #898781;
-    --border: rgba(11,11,11,0.10);
-    --accent: #2a78d6;
-    --accent-ink: #ffffff;
-    --status-applied-dot: #898781;
-    --status-applied-tint: #eeece6;
+    color-scheme: dark;
+    --page: #0b0e13;
+    --surface: #12161d;
+    --surface-hover: #171c24;
+    --text-primary: #f5f7fa;
+    --text-secondary: #9aa4b2;
+    --text-muted: #6b7684;
+    --border: rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.16);
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-ink: #06211d;
+    --status-applied-dot: #6b7684;
+    --status-applied-tint: rgba(255,255,255,0.06);
     --status-interview-dot: #fab219;
-    --status-interview-tint: #fef2d6;
+    --status-interview-tint: rgba(250,178,25,0.14);
     --status-offer-dot: #0ca30c;
-    --status-offer-tint: #e0f5df;
+    --status-offer-tint: rgba(12,163,12,0.16);
     --status-rejected-dot: #d03b3b;
-    --status-rejected-tint: #fbe4e4;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --page: #0d0d0d;
-      --surface: #1a1a19;
-      --text-primary: #ffffff;
-      --text-secondary: #c3c2b7;
-      --text-muted: #898781;
-      --border: rgba(255,255,255,0.10);
-      --accent: #3987e5;
-      --accent-ink: #ffffff;
-      --status-applied-dot: #898781;
-      --status-applied-tint: #2a2a27;
-      --status-interview-dot: #fab219;
-      --status-interview-tint: #3a2f14;
-      --status-offer-dot: #0ca30c;
-      --status-offer-tint: #123a12;
-      --status-rejected-dot: #d03b3b;
-      --status-rejected-tint: #3a1f1f;
-    }
+    --status-rejected-tint: rgba(208,59,59,0.14);
+    --radius-lg: 16px;
+    --radius-md: 10px;
   }
 
   * { box-sizing: border-box; }
@@ -52,85 +36,105 @@
     margin: 0;
     background: var(--page);
     color: var(--text-primary);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
   .page {
-    max-width: 1040px;
+    max-width: 1080px;
     margin: 0 auto;
-    padding: 32px 24px 64px;
+    padding: 48px 32px 96px;
   }
 
   .topbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 28px;
+    margin-bottom: 40px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--accent);
+    flex: none;
   }
 
   .topbar h1 {
-    font-size: 20px;
+    font-size: 19px;
     font-weight: 600;
     margin: 0;
+    letter-spacing: -0.01em;
   }
 
   .topbar .greeting {
     color: var(--text-secondary);
-    font-size: 14px;
-    margin: 2px 0 0;
+    font-size: 13px;
+    margin: 4px 0 0 20px;
   }
 
   .signout-form button {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-secondary);
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: var(--radius-md);
+    padding: 9px 16px;
     font-size: 13px;
+    font-family: inherit;
     cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
   }
-  .signout-form button:hover { color: var(--text-primary); border-color: var(--text-muted); }
+  .signout-form button:hover { color: var(--text-primary); border-color: var(--border-strong); }
 
   .stat-row {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 28px;
+    gap: 20px;
+    margin-bottom: 32px;
   }
 
   .stat-tile {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px 20px;
+    border-radius: var(--radius-lg);
+    padding: 24px 26px;
   }
 
   .stat-tile .label {
     font-size: 12px;
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0 0 8px;
+    letter-spacing: 0.06em;
+    margin: 0 0 12px;
   }
 
   .stat-tile .value {
-    font-size: 32px;
+    font-size: 34px;
     font-weight: 600;
     line-height: 1;
     margin: 0;
+    letter-spacing: -0.02em;
   }
 
   .stat-tile .sub {
     font-size: 12px;
     color: var(--text-secondary);
-    margin: 6px 0 0;
+    margin: 8px 0 0;
+    line-height: 1.5;
   }
 
   .breakdown-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 4px;
+    gap: 10px;
+    margin-top: 2px;
   }
 
   .breakdown-row {
@@ -153,7 +157,7 @@
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     overflow: hidden;
   }
 
@@ -161,7 +165,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 20px;
+    padding: 20px 26px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -169,17 +173,19 @@
     font-size: 15px;
     font-weight: 600;
     margin: 0;
+    letter-spacing: -0.01em;
   }
 
   select {
-    background: var(--surface);
+    background: var(--page);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    padding: 7px 12px;
     font-size: 13px;
     font-family: inherit;
   }
+  select:hover { border-color: var(--border-strong); }
   select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   table { width: 100%; border-collapse: collapse; }
@@ -188,33 +194,33 @@
     text-align: left;
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
     color: var(--text-muted);
     font-weight: 500;
-    padding: 10px 20px;
+    padding: 12px 26px;
     border-bottom: 1px solid var(--border);
   }
 
   tbody td {
-    padding: 14px 20px;
+    padding: 18px 26px;
     border-bottom: 1px solid var(--border);
     font-size: 14px;
     vertical-align: middle;
   }
 
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 3%, transparent); }
+  tbody tr:hover { background: var(--surface-hover); }
 
   .title-cell .title { font-weight: 500; }
-  .title-cell .company { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+  .title-cell .company { color: var(--text-secondary); font-size: 13px; margin-top: 3px; }
   .title-cell a { color: inherit; text-decoration: none; }
-  .title-cell a:hover { text-decoration: underline; }
+  .title-cell a:hover { color: var(--accent); }
 
   .badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 5px 12px;
     border-radius: 999px;
     font-size: 12px;
     font-weight: 500;
@@ -222,24 +228,29 @@
   }
 
   .empty-state {
-    padding: 48px 20px;
+    padding: 56px 20px;
     text-align: center;
     color: var(--text-secondary);
+    font-size: 14px;
   }
 
   @media (max-width: 720px) {
+    .page { padding: 32px 20px 64px; }
     .stat-row { grid-template-columns: 1fr; }
     thead { display: none; }
     tbody td { display: block; border-bottom: none; padding: 6px 20px; }
-    tbody tr { border-bottom: 1px solid var(--border); padding: 8px 0; display: block; }
+    tbody tr { border-bottom: 1px solid var(--border); padding: 10px 0; display: block; }
   }
 </style>
 </head>
 <body>
   <div class="page">
     <div class="topbar">
-      <div>
-        <h1>Application Tracker</h1>
+      <div style="display:flex; align-items:baseline;">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <h1>Application Tracker</h1>
+        </div>
         <p class="greeting">Welcome, {{ user_name }}</p>
       </div>
       <form class="signout-form" action="/logout" method="post">
@@ -259,9 +270,9 @@
       </div>
 
       <div class="stat-tile">
-        <p class="label">Interview / Offer Rate</p>
-        <p class="value" id="statConversion">0%</p>
-        <p class="sub">Share of applications that reached interview or offer</p>
+        <p class="label">Reached Out</p>
+        <p class="value" id="statConversion">0</p>
+        <p class="sub">Applications that progressed to interview or offer</p>
       </div>
     </div>
 
@@ -341,8 +352,7 @@
       }).join("");
 
       const advanced = counts.Interview + counts.Offer;
-      const rate = total > 0 ? Math.round((advanced / total) * 100) : 0;
-      document.getElementById("statConversion").textContent = rate + "%";
+      document.getElementById("statConversion").textContent = advanced;
     }
 
     function renderTable() {

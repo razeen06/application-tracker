@@ -1,23 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Application Tracker</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Application Tracker</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0b0e13;
+    --surface: #12161d;
+    --text-primary: #f5f7fa;
+    --text-secondary: #9aa4b2;
+    --text-muted: #6b7684;
+    --border: rgba(255,255,255,0.08);
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-ink: #06211d;
+    --warning-dot: #fab219;
+    --warning-tint: rgba(250,178,25,0.14);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+  }
+
+  .landing-page {
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+  }
+
+  .brand-mark {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    background: var(--accent);
+    margin: 0 auto 24px;
+  }
+
+  h1 {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0 0 12px;
+  }
+
+  .landing-page > p {
+    font-size: 15px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin: 0 0 32px;
+  }
+
+  .google-login-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 10px;
+    padding: 13px 20px;
+    transition: background 0.15s ease;
+  }
+  .google-login-button:hover { background: var(--accent-hover); }
+
+  .warning {
+    background: var(--warning-tint);
+    color: var(--text-primary);
+    border: 1px solid rgba(250,178,25,0.3);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+</style>
 </head>
 <body>
-    <section class="landing-page">
-        <h1>Application Tracker</h1>
-        <p>Sign in to access your dashboard.</p>
+  <section class="landing-page">
+    <div class="brand-mark"></div>
+    <h1>Application Tracker</h1>
+    <p>Sign in to track and manage your job applications in one place.</p>
 
-        {% if oauth_ready %}
-            <a href="/login" class="google-login-button">
-                Sign in with Google
-            </a>
-        {% else %}
-            <p class="warning">
-                Google OAuth is not configured. Check your .env file.
-            </p>
-        {% endif %}
-    </section>
+    {% if oauth_ready %}
+      <a href="/login" class="google-login-button">
+        Sign in with Google
+      </a>
+    {% else %}
+      <p class="warning">
+        Google OAuth is not configured. Check your .env file.
+      </p>
+    {% endif %}
+  </section>
 </body>
 </html>

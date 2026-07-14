@@ -4,8 +4,11 @@ import os
 
 from routes import main_routes, oauth
 from constants import GOOGLE_DISCOVERY_URL
+from models import db
 
 load_dotenv()
+
+basedir = os.path.abspath(os.path.dirname(__file__))
 
 
 def create_app():
@@ -19,7 +22,13 @@ def create_app():
     app.config["GOOGLE_CLIENT_SECRET"] = google_client_secret
     app.config["OAUTH_READY"] = bool(google_client_id and google_client_secret)
 
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+        "DATABASE_URL", "sqlite:///" + os.path.join(basedir, "app.db")
+    )
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
     oauth.init_app(app)
+    db.init_app(app)
 
     if google_client_id and google_client_secret:
         oauth.register(
@@ -33,6 +42,9 @@ def create_app():
         )
 
     app.register_blueprint(main_routes)
+
+    with app.app_context():
+        db.create_all()
 
     return app
 

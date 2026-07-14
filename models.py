@@ -1,4 +1,5 @@
 import json
+import secrets
 from datetime import date
 from enum import Enum
 
@@ -12,6 +13,19 @@ class ApplicationStatus(Enum):
     INTERVIEW = "Interview"
     REJECTED = "Rejected"
     OFFER = "Offer"
+
+
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(255))
+    api_token = db.Column(db.String(64), unique=True, index=True)
+
+    def generate_api_token(self):
+        self.api_token = secrets.token_hex(32)
+        return self.api_token
 
 
 class Application(db.Model):
@@ -32,3 +46,16 @@ class Application(db.Model):
 
     def set_flags(self, flags_list):
         self.flags = json.dumps(flags_list)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "title": self.title,
+            "company": self.company,
+            "url": self.url,
+            "status": self.status.value if self.status else None,
+            "flags": self.get_flags(),
+            "applied_date": self.applied_date.isoformat() if self.applied_date else None,
+            "notes": self.notes
+        }

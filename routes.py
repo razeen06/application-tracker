@@ -1,7 +1,9 @@
 from functools import wraps
 
-from flask import Blueprint, render_template, redirect, session, url_for, current_app
+from flask import Blueprint, render_template, redirect, session, url_for, current_app, jsonify
 from authlib.integrations.flask_client import OAuth
+
+from models import db, User
 
 oauth = OAuth()
 main_routes = Blueprint("main_routes", __name__)
@@ -54,6 +56,17 @@ def auth_google_callback():
     session["user_email"] = user_email
     session["user_name"] = user_name
 
+    user = User.query.filter_by(email=user_email).first()
+
+    if not user:
+        user = User(email=user_email, name=user_name)
+        user.generate_api_token()
+        db.session.add(user)
+    else:
+        user.name = user_name
+
+    db.session.commit()
+
     return redirect(url_for("main_routes.dashboard"))
 
 
@@ -67,3 +80,18 @@ def logout():
 @login_required
 def dashboard():
     return render_template("dashboard.html", user_name=session.get("user_name"))
+
+
+@main_routes.route("/api/token")
+@login_required
+def get_api_token():
+    user = User.query.filter_by(email=session["user_email"]).first()
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    if not user.api_token:
+        user.generate_api_token()
+        db.session.commit()
+
+    return jsonify({"token": user.api_token})

@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os
 
 from routes import main_routes, oauth
+from api import api_routes
 from constants import GOOGLE_DISCOVERY_URL
 from models import db
 
@@ -42,6 +43,7 @@ def create_app():
         )
 
     app.register_blueprint(main_routes)
+    app.register_blueprint(api_routes)
 
     with app.app_context():
         db.create_all()

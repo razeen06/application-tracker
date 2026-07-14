@@ -1,4 +1,6 @@
 from flask import Flask
+from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 import os
 
@@ -12,9 +14,44 @@ load_dotenv()
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 
+def _database_uri():
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        # Render (and Heroku) hand out "postgres://", but SQLAlchemy 1.4+
+        # only accepts the "postgresql://" scheme for the same database.
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        return database_url
+    return "sqlite:///" + os.path.join(basedir, "app.db")
+
+
 def create_app():
     app = Flask(__name__)
-    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-later")
+
+    # Behind Render's TLS-terminating proxy the app sees plain HTTP
+    # internally; ProxyFix reads X-Forwarded-* so request.scheme/host (and
+    # therefore url_for(..., _external=True) for the OAuth redirect_uri)
+    # come out as https:// instead of http://.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+    app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+
+    secret_key = os.getenv("FLASK_SECRET_KEY")
+    if not secret_key:
+        if app.config["DEBUG"]:
+            secret_key = "dev-secret-key-change-later"
+        else:
+            raise RuntimeError(
+                "FLASK_SECRET_KEY must be set when FLASK_DEBUG is not enabled. "
+                'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+    app.secret_key = secret_key
+
+    # Session cookies should never travel over plain HTTP once this is
+    # actually deployed behind HTTPS.
+    app.config["SESSION_COOKIE_SECURE"] = not app.config["DEBUG"]
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     google_client_id = os.getenv("GOOGLE_CLIENT_ID")
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -23,9 +60,7 @@ def create_app():
     app.config["GOOGLE_CLIENT_SECRET"] = google_client_secret
     app.config["OAUTH_READY"] = bool(google_client_id and google_client_secret)
 
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
-        "DATABASE_URL", "sqlite:///" + os.path.join(basedir, "app.db")
-    )
+    app.config["SQLALCHEMY_DATABASE_URI"] = _database_uri()
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     oauth.init_app(app)
@@ -42,6 +77,19 @@ def create_app():
             }
         )
 
+    # CORS is scoped to /api/* only -- the dashboard/login pages are
+    # rendered server-side and same-origin, so they don't need it. The
+    # Chrome extension's background service worker is the one cross-origin
+    # caller, hitting the API from its own chrome-extension:// origin.
+    extension_origin = os.getenv("EXTENSION_ORIGIN")
+    if extension_origin:
+        CORS(
+            app,
+            resources={r"/api/*": {"origins": extension_origin}},
+            allow_headers=["Content-Type", "Authorization"],
+            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        )
+
     app.register_blueprint(main_routes)
     app.register_blueprint(api_routes)
 
@@ -55,4 +103,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=app.config["DEBUG"])

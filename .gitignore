@@ -2,6 +2,12 @@ venv/
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 instance/
 *.sqlite3
 *.db
+settings.json
+*token*
+*secret*
+*credential*

@@ -1,14 +1,442 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Dashboard - Application Tracker</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard - Application Tracker</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6;
+    --accent-ink: #ffffff;
+    --status-applied-dot: #898781;
+    --status-applied-tint: #eeece6;
+    --status-interview-dot: #fab219;
+    --status-interview-tint: #fef2d6;
+    --status-offer-dot: #0ca30c;
+    --status-offer-tint: #e0f5df;
+    --status-rejected-dot: #d03b3b;
+    --status-rejected-tint: #fbe4e4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --border: rgba(255,255,255,0.10);
+      --accent: #3987e5;
+      --accent-ink: #ffffff;
+      --status-applied-dot: #898781;
+      --status-applied-tint: #2a2a27;
+      --status-interview-dot: #fab219;
+      --status-interview-tint: #3a2f14;
+      --status-offer-dot: #0ca30c;
+      --status-offer-tint: #123a12;
+      --status-rejected-dot: #d03b3b;
+      --status-rejected-tint: #3a1f1f;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  .page {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+  }
+
+  .topbar h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .topbar .greeting {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin: 2px 0 0;
+  }
+
+  .signout-form button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .signout-form button:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .stat-tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+
+  .stat-tile .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 8px;
+  }
+
+  .stat-tile .value {
+    font-size: 32px;
+    font-weight: 600;
+    line-height: 1;
+    margin: 0;
+  }
+
+  .stat-tile .sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 6px 0 0;
+  }
+
+  .breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .breakdown-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .breakdown-row .name { display: flex; align-items: center; gap: 8px; }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .card-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  select {
+    background: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  table { width: 100%; border-collapse: collapse; }
+
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    font-weight: 500;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tbody td {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 3%, transparent); }
+
+  .title-cell .title { font-weight: 500; }
+  .title-cell .company { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+  .title-cell a { color: inherit; text-decoration: none; }
+  .title-cell a:hover { text-decoration: underline; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .empty-state {
+    padding: 48px 20px;
+    text-align: center;
+    color: var(--text-secondary);
+  }
+
+  @media (max-width: 720px) {
+    .stat-row { grid-template-columns: 1fr; }
+    thead { display: none; }
+    tbody td { display: block; border-bottom: none; padding: 6px 20px; }
+    tbody tr { border-bottom: 1px solid var(--border); padding: 8px 0; display: block; }
+  }
+</style>
 </head>
 <body>
-    <h1>Welcome, {{ user_name }}</h1>
-
-    <form action="/logout" method="post">
+  <div class="page">
+    <div class="topbar">
+      <div>
+        <h1>Application Tracker</h1>
+        <p class="greeting">Welcome, {{ user_name }}</p>
+      </div>
+      <form class="signout-form" action="/logout" method="post">
         <button type="submit">Sign out</button>
-    </form>
+      </form>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-tile">
+        <p class="label">Total Applications</p>
+        <p class="value" id="statTotal">0</p>
+      </div>
+
+      <div class="stat-tile">
+        <p class="label">By Status</p>
+        <div class="breakdown-list" id="statBreakdown"></div>
+      </div>
+
+      <div class="stat-tile">
+        <p class="label">Interview / Offer Rate</p>
+        <p class="value" id="statConversion">0%</p>
+        <p class="sub">Share of applications that reached interview or offer</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2>Applications</h2>
+        <select id="statusFilter">
+          <option value="all">All statuses</option>
+          <option value="Applied">Applied</option>
+          <option value="Interview">Interview</option>
+          <option value="Offer">Offer</option>
+          <option value="Rejected">Rejected</option>
+        </select>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Applied</th>
+            <th>Update</th>
+          </tr>
+        </thead>
+        <tbody id="applicationsBody"></tbody>
+      </table>
+
+      <div class="empty-state" id="emptyState" style="display:none;">
+        No applications tracked yet.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const STATUS_META = {
+      Applied:   { dot: "var(--status-applied-dot)",   tint: "var(--status-applied-tint)" },
+      Interview: { dot: "var(--status-interview-dot)", tint: "var(--status-interview-tint)" },
+      Offer:     { dot: "var(--status-offer-dot)",     tint: "var(--status-offer-tint)" },
+      Rejected:  { dot: "var(--status-rejected-dot)",  tint: "var(--status-rejected-tint)" }
+    };
+    const STATUS_ORDER = ["Applied", "Interview", "Offer", "Rejected"];
+
+    let apiToken = null;
+    let applications = [];
+    let currentFilter = "all";
+
+    function formatDate(isoDate) {
+      if (!isoDate) return "—";
+      const d = new Date(isoDate + "T00:00:00");
+      return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    }
+
+    function badgeHtml(status) {
+      const meta = STATUS_META[status] || STATUS_META.Applied;
+      return `<span class="badge" style="background:${meta.tint}">` +
+             `<span class="dot" style="background:${meta.dot}"></span>${status}</span>`;
+    }
+
+    function statusOptionsHtml(current) {
+      return STATUS_ORDER.map(function (s) {
+        return `<option value="${s}" ${s === current ? "selected" : ""}>${s}</option>`;
+      }).join("");
+    }
+
+    function renderStats() {
+      const total = applications.length;
+      document.getElementById("statTotal").textContent = total;
+
+      const counts = { Applied: 0, Interview: 0, Offer: 0, Rejected: 0 };
+      applications.forEach(function (a) { counts[a.status] = (counts[a.status] || 0) + 1; });
+
+      const breakdown = document.getElementById("statBreakdown");
+      breakdown.innerHTML = STATUS_ORDER.map(function (s) {
+        const meta = STATUS_META[s];
+        return `<div class="breakdown-row"><span class="name">` +
+               `<span class="dot" style="background:${meta.dot}"></span>${s}</span><span>${counts[s]}</span></div>`;
+      }).join("");
+
+      const advanced = counts.Interview + counts.Offer;
+      const rate = total > 0 ? Math.round((advanced / total) * 100) : 0;
+      document.getElementById("statConversion").textContent = rate + "%";
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById("applicationsBody");
+      const emptyState = document.getElementById("emptyState");
+
+      const visible = currentFilter === "all"
+        ? applications
+        : applications.filter(function (a) { return a.status === currentFilter; });
+
+      if (applications.length === 0) {
+        tbody.innerHTML = "";
+        emptyState.style.display = "block";
+        emptyState.textContent = "No applications tracked yet.";
+        return;
+      }
+
+      if (visible.length === 0) {
+        tbody.innerHTML = "";
+        emptyState.style.display = "block";
+        emptyState.textContent = "No applications match this filter.";
+        return;
+      }
+
+      emptyState.style.display = "none";
+
+      tbody.innerHTML = visible.map(function (a) {
+        const link = a.url
+          ? `<a href="${a.url}" target="_blank" rel="noopener">${a.title}</a>`
+          : a.title;
+        return `<tr>
+          <td class="title-cell">
+            <div class="title">${link}</div>
+            <div class="company">${a.company}</div>
+          </td>
+          <td>${badgeHtml(a.status)}</td>
+          <td>${formatDate(a.applied_date)}</td>
+          <td>
+            <select data-id="${a.id}" class="row-status-select">
+              ${statusOptionsHtml(a.status)}
+            </select>
+          </td>
+        </tr>`;
+      }).join("");
+
+      tbody.querySelectorAll(".row-status-select").forEach(function (select) {
+        select.addEventListener("change", function () {
+          updateStatus(parseInt(select.dataset.id, 10), select.value);
+        });
+      });
+    }
+
+    async function updateStatus(id, newStatus) {
+      const res = await fetch(`/api/applications/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiToken}`
+        },
+        body: JSON.stringify({ status: newStatus })
+      });
+
+      if (!res.ok) return;
+
+      const updated = await res.json();
+      const idx = applications.findIndex(function (a) { return a.id === updated.id; });
+      if (idx !== -1) applications[idx] = updated;
+
+      renderStats();
+      renderTable();
+    }
+
+    async function loadApplications() {
+      const res = await fetch("/api/applications", {
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      applications = await res.json();
+      renderStats();
+      renderTable();
+    }
+
+    document.getElementById("statusFilter").addEventListener("change", function (e) {
+      currentFilter = e.target.value;
+      renderTable();
+    });
+
+    async function init() {
+      const tokenRes = await fetch("/api/token");
+      const tokenData = await tokenRes.json();
+      apiToken = tokenData.token;
+      await loadApplications();
+    }
+
+    init();
+  </script>
 </body>
 </html>

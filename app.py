@@ -60,6 +60,13 @@ def create_app():
     app.config["GOOGLE_CLIENT_SECRET"] = google_client_secret
     app.config["OAUTH_READY"] = bool(google_client_id and google_client_secret)
 
+    # The "Connect Extension" button needs the Chrome extension's ID to call
+    # chrome.runtime.sendMessage(EXTENSION_ID, ...). This is the *current
+    # dev/unpacked* ID -- Chrome assigns a new permanent ID once this is
+    # published to the Chrome Web Store, at which point this must be updated
+    # (an env var change on Render, not a code change).
+    app.config["EXTENSION_ID"] = os.getenv("EXTENSION_ID", "omfepdnjidhlachagnbielicaghjpdkm")
+
     app.config["SQLALCHEMY_DATABASE_URI"] = _database_uri()
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 

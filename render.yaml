@@ -20,6 +20,12 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      # Current dev/unpacked extension ID. MUST be updated (here, in the
+      # Render dashboard, and in .env.example) to the new permanent ID Chrome
+      # assigns once this extension is published to the Chrome Web Store --
+      # see the comment in .env.example for why.
+      - key: EXTENSION_ID
+        value: "omfepdnjidhlachagnbielicaghjpdkm"
       - key: DATABASE_URL
         fromDatabase:
           name: application-tracker-db

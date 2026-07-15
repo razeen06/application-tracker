@@ -97,7 +97,11 @@ def logout():
 @main_routes.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", user_name=session.get("user_name"))
+    return render_template(
+        "dashboard.html",
+        user_name=session.get("user_name"),
+        extension_id=current_app.config.get("EXTENSION_ID"),
+    )
 
 
 @main_routes.route("/api/token")

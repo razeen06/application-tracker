@@ -234,6 +234,57 @@
     font-size: 14px;
   }
 
+  .connect-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
+    padding: 20px 26px;
+  }
+
+  .connect-card-text h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .connect-card-text p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .connect-card-action {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: none;
+  }
+
+  .connect-btn {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+  }
+  .connect-btn:hover { background: var(--accent-hover); }
+  .connect-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .connect-status {
+    font-size: 13px;
+    min-height: 18px;
+  }
+  .connect-status-success { color: var(--status-offer-dot); }
+  .connect-status-error { color: var(--status-rejected-dot); }
+
   @media (max-width: 720px) {
     .page { padding: 32px 20px 64px; }
     .stat-row { grid-template-columns: 1fr; }
@@ -256,6 +307,17 @@
       <form class="signout-form" action="/logout" method="post">
         <button type="submit">Sign out</button>
       </form>
+    </div>
+
+    <div class="card connect-card">
+      <div class="connect-card-text">
+        <h2>Chrome Extension</h2>
+        <p>Connect the Intern Copilot extension so it can sync tracked applications to your account.</p>
+      </div>
+      <div class="connect-card-action">
+        <span class="connect-status" id="connectStatus"></span>
+        <button class="connect-btn" id="connectExtensionBtn">Connect Extension</button>
+      </div>
     </div>
 
     <div class="stat-row">
@@ -447,6 +509,58 @@
     }
 
     init();
+
+    // ---------- Connect Extension ----------
+    // Current dev/unpacked extension ID -- see the comment on EXTENSION_ID in
+    // app.py and .env.example. This MUST be updated to the permanent ID
+    // Chrome Web Store assigns once the extension is published there.
+    const EXTENSION_ID = {{ extension_id | tojson }};
+
+    document.getElementById("connectExtensionBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("connectExtensionBtn");
+      const statusEl = document.getElementById("connectStatus");
+
+      btn.disabled = true;
+      statusEl.className = "connect-status";
+      statusEl.textContent = "Connecting...";
+
+      // chrome.runtime only exists on this page at all if some installed
+      // extension's externally_connectable.matches covers this origin --
+      // if the extension isn't installed, this is undefined synchronously,
+      // it doesn't throw or hang.
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+        statusEl.textContent = "Extension not detected — install it first.";
+        statusEl.className = "connect-status connect-status-error";
+        btn.disabled = false;
+        return;
+      }
+
+      try {
+        const tokenRes = await fetch("/api/token");
+        const tokenData = await tokenRes.json();
+
+        chrome.runtime.sendMessage(
+          EXTENSION_ID,
+          { type: "SET_API_TOKEN", token: tokenData.token },
+          (response) => {
+            btn.disabled = false;
+
+            if (chrome.runtime.lastError || !response || !response.ok) {
+              statusEl.textContent = "Extension not detected — install it first.";
+              statusEl.className = "connect-status connect-status-error";
+              return;
+            }
+
+            statusEl.textContent = "Connected!";
+            statusEl.className = "connect-status connect-status-success";
+          }
+        );
+      } catch (err) {
+        statusEl.textContent = "Something went wrong — try again.";
+        statusEl.className = "connect-status connect-status-error";
+        btn.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>

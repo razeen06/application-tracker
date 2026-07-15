@@ -76,7 +76,13 @@ class Application(db.Model):
             "status": self.status.value if self.status else None,
             "flags": self.get_flags(),
             "applied_date": self.applied_date.isoformat() if self.applied_date else None,
-            "notes": self.notes
+            "notes": self.notes,
+            "ai_suggested_status": self.ai_suggested_status,
+            "ai_suggestion_source_email_id": self.ai_suggestion_source_email_id,
+            "ai_suggestion_seen": self.ai_suggestion_seen,
+            "ai_suggestion_created_at": (
+                self.ai_suggestion_created_at.isoformat() if self.ai_suggestion_created_at else None
+            ),
         }
 
 

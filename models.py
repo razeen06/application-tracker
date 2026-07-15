@@ -1,6 +1,6 @@
 import json
 import secrets
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 
 from flask_sqlalchemy import SQLAlchemy
@@ -60,4 +60,28 @@ class Application(db.Model):
             "flags": self.get_flags(),
             "applied_date": self.applied_date.isoformat() if self.applied_date else None,
             "notes": self.notes
+        }
+
+
+class AISummary(db.Model):
+    __tablename__ = "ai_summaries"
+
+    id = db.Column(db.Integer, primary_key=True)
+    url = db.Column(db.String(500), unique=True, nullable=False, index=True)
+    summary_text = db.Column(db.Text, nullable=False)
+    flags_snapshot = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def get_flags_snapshot(self):
+        return json.loads(self.flags_snapshot) if self.flags_snapshot else []
+
+    def set_flags_snapshot(self, flags_list):
+        self.flags_snapshot = json.dumps(flags_list)
+
+    def to_dict(self):
+        return {
+            "url": self.url,
+            "summary": self.summary_text,
+            "flags": self.get_flags_snapshot(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

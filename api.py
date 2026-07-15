@@ -1,11 +1,37 @@
+import os
 from datetime import datetime, date
 
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
+from google import genai
+from google.genai import types as genai_types
+from sqlalchemy.exc import IntegrityError
 
-from models import db, Application, ApplicationStatus
+from models import db, Application, ApplicationStatus, AISummary
 from auth import token_required
 
 api_routes = Blueprint("api_routes", __name__, url_prefix="/api")
+
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+MAX_PAGE_TEXT_CHARS = 3000
+GEMINI_TIMEOUT_MS = 15000
+
+_genai_client = None
+_genai_client_checked = False
+
+
+def _get_genai_client():
+    # Lazy + cached: constructing the client is cheap, but this also lets a
+    # missing key fail per-request (a clear "Summary unavailable") instead
+    # of at import time, which would take down the whole app.
+    global _genai_client, _genai_client_checked
+
+    if not _genai_client_checked:
+        _genai_client_checked = True
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            _genai_client = genai.Client(api_key=api_key)
+
+    return _genai_client
 
 
 def _parse_date(value):
@@ -115,3 +141,76 @@ def delete_application(application_id):
     db.session.commit()
 
     return "", 204
+
+
+def _build_summary_prompt(page_text):
+    truncated = page_text[:MAX_PAGE_TEXT_CHARS]
+    return (
+        "Summarize this job posting in exactly 3 bullet points. Plain text "
+        "only -- no markdown, no asterisks, no headers, since this renders "
+        "in a small browser extension popup. Cover exactly these three "
+        "points in this order:\n"
+        "1) The role and key responsibilities.\n"
+        "2) Pay or compensation, if mentioned (write \"Not mentioned\" if it isn't).\n"
+        "3) Eligibility requirements such as year level, WAM/GPA cutoff, or "
+        "visa status, if mentioned (write \"None mentioned\" if there aren't any).\n\n"
+        f"Job posting text:\n{truncated}"
+    )
+
+
+@api_routes.route("/summarize", methods=["POST"])
+@token_required
+def summarize():
+    data = request.get_json(silent=True) or {}
+
+    url = data.get("url")
+    page_text = data.get("page_text")
+
+    if not url or not page_text:
+        return jsonify({"error": "url and page_text are required"}), 400
+
+    existing = AISummary.query.filter_by(url=url).first()
+    if existing:
+        response = existing.to_dict()
+        response["cached"] = True
+        return jsonify(response)
+
+    client = _get_genai_client()
+    if client is None:
+        current_app.logger.warning("Gemini summarize skipped: GEMINI_API_KEY not configured")
+        return jsonify({"error": "Summary unavailable"}), 503
+
+    try:
+        result = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=_build_summary_prompt(page_text),
+            config=genai_types.GenerateContentConfig(
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS)
+            ),
+        )
+        summary_text = (result.text or "").strip()
+    except Exception as e:
+        current_app.logger.warning(f"Gemini summarize call failed for {url}: {e}")
+        return jsonify({"error": "Summary unavailable"}), 503
+
+    if not summary_text:
+        current_app.logger.warning(f"Gemini summarize returned empty text for {url}")
+        return jsonify({"error": "Summary unavailable"}), 503
+
+    summary = AISummary(url=url, summary_text=summary_text)
+    summary.set_flags_snapshot(data.get("flags", []))
+    db.session.add(summary)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # A concurrent request for the same URL won the race and already
+        # inserted a row (url is unique) -- the Gemini call above already
+        # happened and can't be un-billed, but at least don't error out or
+        # store a duplicate; return the row that actually won.
+        db.session.rollback()
+        summary = AISummary.query.filter_by(url=url).first()
+
+    response = summary.to_dict()
+    response["cached"] = False
+    return jsonify(response), 201

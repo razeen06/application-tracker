@@ -31,8 +31,53 @@
     --status-action-required-dot: #f59e0b;
     --status-action-required-tint: rgba(245,158,11,0.14);
     --suggestion-marker: #f87171;
+    --wash-subtle: rgba(255,255,255,0.03);
     --radius-lg: 16px;
     --radius-md: 10px;
+  }
+
+  /* ---- Background theme (Settings -> Appearance -> Background theme) ---- */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page: #f6f7f9;
+    --surface: #ffffff;
+    --surface-hover: #eef0f3;
+    --text-primary: #14181f;
+    --text-secondary: #5b6472;
+    --text-muted: #5f6b7a;
+    --border: rgba(15,23,42,0.10);
+    --border-strong: rgba(15,23,42,0.18);
+    --status-applied-tint: rgba(15,23,42,0.06);
+    --wash-subtle: rgba(15,23,42,0.035);
+  }
+
+  /* ---- Button colour (Settings -> Appearance -> Button colour). Teal is
+     the default and lives on the bare :root above; these are the other
+     choices. Hover shifts lighter for the two light-toned accents (teal,
+     amber -- already paired with dark ink, so lighter only helps contrast)
+     and darker for the deep-toned ones paired with white ink (violet, rose,
+     emerald -- lighter would fail contrast against white text). Every
+     accent/hover pairing here was checked to clear 4.5:1 against its own
+     --accent-ink. ---- */
+  :root[data-accent="violet"] {
+    --accent: #7c3aed;
+    --accent-hover: #6d28d9;
+    --accent-ink: #ffffff;
+  }
+  :root[data-accent="rose"] {
+    --accent: #be123c;
+    --accent-hover: #9f1239;
+    --accent-ink: #ffffff;
+  }
+  :root[data-accent="amber"] {
+    --accent: #f59e0b;
+    --accent-hover: #fbbf24;
+    --accent-ink: #451a03;
+  }
+  :root[data-accent="emerald"] {
+    --accent: #047857;
+    --accent-hover: #065f46;
+    --accent-ink: #ffffff;
   }
 
   * { box-sizing: border-box; }
@@ -264,7 +309,7 @@
     align-items: center;
     gap: 12px;
     padding: 12px 26px 12px 23px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--wash-subtle);
     border-left: 3px solid transparent;
     cursor: pointer;
     font-size: 13px;
@@ -354,9 +399,187 @@
     tbody td { display: block; border-bottom: none; padding: 6px 20px; }
     tbody tr { border-bottom: 1px solid var(--border); padding: 10px 0; display: block; }
   }
+
+  /* ---- Settings: gear button ---- */
+  .gear-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    flex: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  }
+  .gear-btn:hover { color: var(--text-primary); border-color: var(--border-strong); background: var(--surface-hover); }
+
+  /* ---- Settings: overlay + panel ---- */
+  .settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 48px 20px;
+    overflow-y: auto;
+    z-index: 100;
+  }
+  .settings-overlay.open { display: flex; }
+
+  .settings-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    width: 100%;
+    max-width: 560px;
+    max-height: calc(100vh - 96px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .settings-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
+
+  .settings-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .settings-close:hover { background: var(--surface-hover); color: var(--text-primary); }
+
+  .settings-body { padding: 4px 24px 24px; overflow-y: auto; }
+
+  .settings-section { padding: 20px 0; border-bottom: 1px solid var(--border); }
+  .settings-section:last-child { border-bottom: none; }
+
+  .settings-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin: 0 0 14px;
+  }
+
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .settings-row:last-child { margin-bottom: 0; }
+  .settings-row-column { flex-direction: column; align-items: flex-start; gap: 10px; }
+
+  .settings-row-label { font-size: 13.5px; color: var(--text-primary); }
+
+  .theme-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 3px;
+    gap: 2px;
+  }
+  .theme-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-weight: 600;
+    font-family: inherit;
+    padding: 6px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .theme-toggle-btn.active { background: var(--accent); color: var(--accent-ink); }
+
+  .accent-swatches { display: flex; gap: 10px; }
+  .accent-swatch {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    outline: 1px solid var(--border);
+    outline-offset: 2px;
+    background: var(--swatch-color);
+    cursor: pointer;
+    padding: 0;
+    transition: transform 0.1s ease, border-color 0.15s ease;
+  }
+  .accent-swatch:hover { transform: scale(1.1); }
+  .accent-swatch.active { border-color: var(--text-primary); }
+
+  .how-to-use-item { margin-bottom: 16px; }
+  .how-to-use-item:last-child { margin-bottom: 0; }
+  .how-to-use-item h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 4px; }
+  .how-to-use-item p { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+
+  .settings-helper { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 12px; }
+
+  .settings-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    margin-bottom: 10px;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .settings-btn:last-child { margin-bottom: 0; }
+  .settings-btn:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+
+  .settings-btn-danger { color: var(--status-rejected-dot); border-color: rgba(208,59,59,0.3); }
+  .settings-btn-danger:hover { background: var(--status-rejected-tint); border-color: var(--status-rejected-dot); }
+
+  @media (max-width: 720px) {
+    .settings-overlay { padding: 20px 12px; }
+    .settings-header, .settings-body { padding-left: 18px; padding-right: 18px; }
+  }
 </style>
 </head>
 <body>
+  <script>
+    // Applied synchronously, before the rest of the page renders, so a
+    // saved light theme / accent choice doesn't flash dark-teal first.
+    (function () {
+      var theme = localStorage.getItem("theme") || "dark";
+      var accent = localStorage.getItem("accentColor") || "teal";
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.setAttribute("data-accent", accent);
+    })();
+  </script>
   <div class="page">
     <div class="topbar">
       <div style="display:flex; align-items:baseline;">
@@ -366,9 +589,12 @@
         </div>
         <p class="greeting">Welcome, {{ user_name }}</p>
       </div>
-      <form class="signout-form" action="/logout" method="post">
-        <button type="submit">Sign out</button>
-      </form>
+      <button class="gear-btn" id="settingsGearBtn" type="button" aria-label="Settings" title="Settings">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"></path>
+        </svg>
+      </button>
     </div>
 
     <div class="card connect-card">
@@ -451,6 +677,80 @@
 
       <div class="empty-state" id="emptyState" style="display:none;">
         No applications tracked yet.
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="settingsOverlay">
+    <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settings-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button class="settings-close" id="settingsCloseBtn" type="button" aria-label="Close settings">&times;</button>
+      </div>
+      <div class="settings-body">
+        <section class="settings-section">
+          <p class="settings-section-title">Appearance</p>
+          <div class="settings-row">
+            <span class="settings-row-label">Background theme</span>
+            <div class="theme-toggle" id="themeToggle">
+              <button type="button" class="theme-toggle-btn" data-theme-choice="dark">Dark</button>
+              <button type="button" class="theme-toggle-btn" data-theme-choice="light">Light</button>
+            </div>
+          </div>
+          <div class="settings-row settings-row-column">
+            <span class="settings-row-label">Button colour</span>
+            <div class="accent-swatches" id="accentSwatches">
+              <button type="button" class="accent-swatch" data-accent-choice="teal" style="--swatch-color:#2dd4bf" title="Teal" aria-label="Teal"></button>
+              <button type="button" class="accent-swatch" data-accent-choice="violet" style="--swatch-color:#7c3aed" title="Violet" aria-label="Violet"></button>
+              <button type="button" class="accent-swatch" data-accent-choice="rose" style="--swatch-color:#be123c" title="Rose" aria-label="Rose"></button>
+              <button type="button" class="accent-swatch" data-accent-choice="amber" style="--swatch-color:#f59e0b" title="Amber" aria-label="Amber"></button>
+              <button type="button" class="accent-swatch" data-accent-choice="emerald" style="--swatch-color:#047857" title="Emerald" aria-label="Emerald"></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <p class="settings-section-title">How to use Application Tracker</p>
+          <div class="how-to-use-item">
+            <h3>Add applications from the extension</h3>
+            <p>Install the Intern Copilot Chrome extension. When you submit an application on a supported job board it'll offer to track it, or open the extension's popup and click "Track this page as an application" on any job posting.</p>
+          </div>
+          <div class="how-to-use-item">
+            <h3>Review and manage here</h3>
+            <p>This dashboard lists everything you're tracking. Filter by status, or change one by hand any time with the dropdown on its row.</p>
+          </div>
+          <div class="how-to-use-item">
+            <h3>Connect Gmail for AI updates</h3>
+            <p>Grant read-only Gmail access once, then click "Update Application Status" whenever you want it to scan recent mail and match updates to your applications.</p>
+          </div>
+          <div class="how-to-use-item">
+            <h3>Review AI suggestions</h3>
+            <p>A matched email becomes a suggestion banner under that application, classified as Interview Offered, Action Required, Progress, or Rejected. Nothing is applied automatically.</p>
+          </div>
+          <div class="how-to-use-item">
+            <h3>Clear a suggestion</h3>
+            <p>Click the banner to open the source email and clear its red marker -- the suggestion itself stays visible until resolved. Click "Accept" to apply it as-is, or just pick a different status from the dropdown yourself; either way resolves it.</p>
+          </div>
+          <div class="how-to-use-item">
+            <h3>Connect the extension</h3>
+            <p>Click "Connect Extension" so the installed extension can sync using this account automatically, no copy-pasting a token.</p>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <p class="settings-section-title">Feedback</p>
+          <p class="settings-helper">Spotted a bug, or have an idea that'd make this more useful? Let me know.</p>
+          <a class="settings-btn" href="mailto:razeenmustafiz135@gmail.com?subject=Application%20Tracker%20feedback">Send feedback</a>
+        </section>
+
+        <section class="settings-section">
+          <p class="settings-section-title">Account</p>
+          <form action="/logout" method="post">
+            <button class="settings-btn" type="submit">Sign out</button>
+          </form>
+          <button class="settings-btn" id="resetScanHistoryBtn" type="button">Reset AI scan history</button>
+          <button class="settings-btn settings-btn-danger" id="eraseApplicationsBtn" type="button">Erase all applications</button>
+        </section>
       </div>
     </div>
   </div>
@@ -808,6 +1108,83 @@
         statusEl.textContent = "Something went wrong — try again.";
         statusEl.className = "connect-status connect-status-error";
         btn.disabled = false;
+      }
+    });
+
+    // ---------- Settings: theme + accent color ----------
+    function reflectThemeChoiceUI() {
+      const theme = document.documentElement.getAttribute("data-theme") || "dark";
+      const accent = document.documentElement.getAttribute("data-accent") || "teal";
+      document.querySelectorAll(".theme-toggle-btn").forEach(function (btn) {
+        btn.classList.toggle("active", btn.dataset.themeChoice === theme);
+      });
+      document.querySelectorAll(".accent-swatch").forEach(function (btn) {
+        btn.classList.toggle("active", btn.dataset.accentChoice === accent);
+      });
+    }
+
+    document.querySelectorAll(".theme-toggle-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        document.documentElement.setAttribute("data-theme", btn.dataset.themeChoice);
+        localStorage.setItem("theme", btn.dataset.themeChoice);
+        reflectThemeChoiceUI();
+      });
+    });
+
+    document.querySelectorAll(".accent-swatch").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        document.documentElement.setAttribute("data-accent", btn.dataset.accentChoice);
+        localStorage.setItem("accentColor", btn.dataset.accentChoice);
+        reflectThemeChoiceUI();
+      });
+    });
+
+    reflectThemeChoiceUI();
+
+    // ---------- Settings: open/close ----------
+    const settingsOverlay = document.getElementById("settingsOverlay");
+
+    document.getElementById("settingsGearBtn").addEventListener("click", function () {
+      reflectThemeChoiceUI();
+      settingsOverlay.classList.add("open");
+    });
+    document.getElementById("settingsCloseBtn").addEventListener("click", function () {
+      settingsOverlay.classList.remove("open");
+    });
+    settingsOverlay.addEventListener("click", function (e) {
+      if (e.target === settingsOverlay) settingsOverlay.classList.remove("open");
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") settingsOverlay.classList.remove("open");
+    });
+
+    // ---------- Settings: account actions ----------
+    document.getElementById("resetScanHistoryBtn").addEventListener("click", async function () {
+      if (!confirm(
+        "Reset AI scan history? The next scan will re-check all applicable emails from " +
+        "scratch. Your tracked applications and their statuses won't be touched."
+      )) return;
+
+      const res = await fetch("/api/scan-history/reset", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (res.ok) alert("Scan history reset.");
+    });
+
+    document.getElementById("eraseApplicationsBtn").addEventListener("click", async function () {
+      if (!confirm(
+        "Erase ALL tracked applications? This permanently deletes every application in " +
+        "your account and cannot be undone."
+      )) return;
+
+      const res = await fetch("/api/applications", {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (res.ok) {
+        settingsOverlay.classList.remove("open");
+        await loadApplications();
       }
     });
   </script>

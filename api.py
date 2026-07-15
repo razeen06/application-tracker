@@ -191,6 +191,31 @@ def delete_application(application_id):
     return "", 204
 
 
+@api_routes.route("/applications", methods=["DELETE"])
+@token_required
+def erase_all_applications():
+    # Settings' "Erase all applications" -- a full, unscoped wipe for the
+    # signed-in account. No undo; the client is expected to have already
+    # confirmed with the user before calling this.
+    Application.query.filter_by(user_id=g.current_user.email).delete()
+    db.session.commit()
+    return "", 204
+
+
+@api_routes.route("/scan-history/reset", methods=["POST"])
+@token_required
+def reset_scan_history():
+    # Settings' "Reset AI scan history" -- forgets which emails have already
+    # been looked at (and the scan watermark), so the next scan re-evaluates
+    # the account's whole applicable email history from scratch. Doesn't
+    # touch any tracked application or its status.
+    user = g.current_user
+    ProcessedEmail.query.filter_by(user_id=user.id).delete()
+    user.last_email_scan_at = None
+    db.session.commit()
+    return "", 204
+
+
 def _build_summary_prompt(page_text):
     truncated = page_text[:MAX_PAGE_TEXT_CHARS]
     return (

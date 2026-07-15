@@ -320,6 +320,25 @@
       </div>
     </div>
 
+    <div class="card connect-card">
+      <div class="connect-card-text">
+        <h2>Gmail</h2>
+        {% if gmail_connected %}
+        <p>Connected — Application Tracker can read your Gmail to detect application updates.</p>
+        {% else %}
+        <p>Connect Gmail to let Application Tracker detect application updates from your inbox.</p>
+        {% endif %}
+      </div>
+      <div class="connect-card-action">
+        {% if gmail_connected %}
+        <span class="connect-status connect-status-success">Connected</span>
+        <a class="connect-btn" href="/connect-gmail" style="text-decoration:none; display:inline-block;">Reconnect Gmail</a>
+        {% else %}
+        <a class="connect-btn" href="/connect-gmail" style="text-decoration:none; display:inline-block;">Connect Gmail</a>
+        {% endif %}
+      </div>
+    </div>
+
     <div class="stat-row">
       <div class="stat-tile">
         <p class="label">Total Applications</p>

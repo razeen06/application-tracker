@@ -25,6 +25,13 @@ class User(db.Model):
     name = db.Column(db.String(255))
     api_token = db.Column(db.String(64), unique=True, index=True)
 
+    # Gmail read-access OAuth (separate consent flow from login, see
+    # /connect-gmail). Stored encrypted at rest via crypto.py -- never read or
+    # written as plaintext outside that module.
+    gmail_refresh_token = db.Column(db.Text, nullable=True)
+    gmail_connected_at = db.Column(db.DateTime, nullable=True)
+    last_email_scan_at = db.Column(db.DateTime, nullable=True)
+
     def generate_api_token(self):
         self.api_token = secrets.token_hex(32)
         return self.api_token

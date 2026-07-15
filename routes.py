@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import wraps
 
 from flask import Blueprint, render_template, redirect, session, url_for, current_app, jsonify
@@ -5,6 +6,8 @@ from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import OAuthError
 from sqlalchemy.exc import IntegrityError
 
+import crypto
+from constants import GMAIL_READONLY_SCOPE
 from models import db, User
 
 oauth = OAuth()
@@ -88,6 +91,50 @@ def auth_google_callback():
     return redirect(url_for("main_routes.dashboard"))
 
 
+@main_routes.route("/connect-gmail")
+@login_required
+def connect_gmail():
+    if not current_app.config.get("OAUTH_READY", False):
+        return "Google OAuth is not configured. Check your .env file.", 500
+
+    redirect_uri = url_for("main_routes.gmail_callback", _external=True)
+    return oauth.google.authorize_redirect(
+        redirect_uri,
+        scope=GMAIL_READONLY_SCOPE,
+        access_type="offline",
+        prompt="consent",
+    )
+
+
+@main_routes.route("/gmail-callback")
+@login_required
+def gmail_callback():
+    try:
+        token = oauth.google.authorize_access_token()
+    except OAuthError:
+        return redirect(url_for("main_routes.dashboard"))
+
+    refresh_token = token.get("refresh_token")
+
+    if not refresh_token:
+        # Happens if the user has already granted this scope before and
+        # Google didn't re-issue a refresh token despite prompt=consent (rare,
+        # but possible if consent was granted very recently). Nothing to
+        # store -- send them back rather than silently "succeeding" with no
+        # actual refresh token on file.
+        return redirect(url_for("main_routes.dashboard"))
+
+    user = User.query.filter_by(email=session["user_email"]).first()
+    if not user:
+        return redirect(url_for("main_routes.dashboard"))
+
+    user.gmail_refresh_token = crypto.encrypt_token(refresh_token)
+    user.gmail_connected_at = datetime.utcnow()
+    db.session.commit()
+
+    return redirect(url_for("main_routes.dashboard"))
+
+
 @main_routes.route("/logout", methods=["POST"])
 def logout():
     session.clear()
@@ -97,10 +144,13 @@ def logout():
 @main_routes.route("/dashboard")
 @login_required
 def dashboard():
+    user = User.query.filter_by(email=session["user_email"]).first()
+
     return render_template(
         "dashboard.html",
         user_name=session.get("user_name"),
         extension_id=current_app.config.get("EXTENSION_ID"),
+        gmail_connected=bool(user and user.gmail_refresh_token),
     )
 
 

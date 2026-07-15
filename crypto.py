@@ -3,17 +3,22 @@ import os
 from cryptography.fernet import Fernet, InvalidToken
 
 _fernet = None
-_fernet_checked = False
 
 
 def _get_fernet():
     # Lazy + cached, same pattern as api.py's _get_genai_client -- a missing
     # key fails per-call with a clear error instead of at import time, which
     # would take down the whole app before any request even needs this.
-    global _fernet, _fernet_checked
+    #
+    # Only a *successful* Fernet(...) is cached. If the env var is missing or
+    # malformed, this re-reads os.getenv() on every call instead of latching
+    # onto that failure for the rest of the process's life -- otherwise,
+    # fixing a bad env var on the host would require restarting the process
+    # before the fix actually took effect, which isn't obvious from the
+    # outside and looks like the fix silently didn't work.
+    global _fernet
 
-    if not _fernet_checked:
-        _fernet_checked = True
+    if _fernet is None:
         key = os.getenv("GMAIL_TOKEN_ENCRYPTION_KEY")
         if key:
             _fernet = Fernet(key.encode())

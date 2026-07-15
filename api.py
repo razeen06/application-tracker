@@ -24,6 +24,18 @@ GEMINI_TIMEOUT_MS = 15000
 SUGGESTION_CATEGORIES = {"Interview Offered", "Action Required", "Progress", "Rejected"}
 VALID_CLASSIFICATIONS = SUGGESTION_CATEGORIES | {"Not Relevant"}
 
+# Maps an ai_suggested_status category onto the real ApplicationStatus it
+# becomes when accepted. "Interview Offered" collapses onto the existing
+# INTERVIEW status rather than getting its own near-duplicate value; the
+# other three map 1:1 (ApplicationStatus gained ACTION_REQUIRED/PROGRESS
+# members specifically to support this).
+SUGGESTION_STATUS_MAP = {
+    "Interview Offered": ApplicationStatus.INTERVIEW,
+    "Action Required": ApplicationStatus.ACTION_REQUIRED,
+    "Progress": ApplicationStatus.PROGRESS,
+    "Rejected": ApplicationStatus.REJECTED,
+}
+
 _genai_client = None
 _genai_client_checked = False
 
@@ -99,6 +111,13 @@ def create_application():
     return jsonify(application.to_dict()), 201
 
 
+def _clear_suggestion(application):
+    application.ai_suggested_status = None
+    application.ai_suggestion_source_email_id = None
+    application.ai_suggestion_seen = False
+    application.ai_suggestion_created_at = None
+
+
 @api_routes.route("/applications/<int:application_id>", methods=["PUT"])
 @token_required
 def update_application(application_id):
@@ -125,11 +144,31 @@ def update_application(application_id):
         parsed = _parse_date(data["applied_date"])
         if parsed:
             application.applied_date = parsed
-    if "status" in data:
+
+    if data.get("accept_suggestion"):
+        # "Accept as-is": copy the AI's suggested category into the real
+        # status field and close out the suggestion. Distinct from the
+        # "status" branch below because the suggestion category string
+        # ("Interview Offered") doesn't always match the ApplicationStatus
+        # value it maps to ("Interview") -- see SUGGESTION_STATUS_MAP.
+        if not application.ai_suggested_status:
+            return jsonify({"error": "No active suggestion to accept"}), 400
+        application.status = SUGGESTION_STATUS_MAP[application.ai_suggested_status]
+        _clear_suggestion(application)
+    elif "status" in data:
         try:
             application.status = ApplicationStatus(data["status"])
         except ValueError:
             return jsonify({"error": f"Invalid status: {data['status']}"}), 400
+        # A manual status edit -- whether or not it matches the AI's
+        # suggestion -- counts as the user having resolved it. Clearing
+        # unconditionally is harmless when there was no active suggestion
+        # (the fields are already None).
+        _clear_suggestion(application)
+    elif "ai_suggestion_seen" in data:
+        # Banner click: acknowledges the suggestion without confirming or
+        # discarding it -- the suggestion itself stays active and visible.
+        application.ai_suggestion_seen = bool(data["ai_suggestion_seen"])
 
     db.session.commit()
 

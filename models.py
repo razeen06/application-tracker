@@ -15,6 +15,12 @@ class ApplicationStatus(Enum):
     INTERVIEW = "Interview"
     REJECTED = "Rejected"
     OFFER = "Offer"
+    # Added for AI-suggested status updates (see api.py's SUGGESTION_STATUS_MAP)
+    # -- "Action Required" and "Progress" have no equivalent among the
+    # original four, so they're first-class statuses rather than collapsed
+    # into an existing one.
+    ACTION_REQUIRED = "Action Required"
+    PROGRESS = "Progress"
 
 
 class User(db.Model):

@@ -26,6 +26,11 @@
     --status-offer-tint: rgba(12,163,12,0.16);
     --status-rejected-dot: #d03b3b;
     --status-rejected-tint: rgba(208,59,59,0.14);
+    --status-progress-dot: #3b82f6;
+    --status-progress-tint: rgba(59,130,246,0.14);
+    --status-action-required-dot: #f59e0b;
+    --status-action-required-tint: rgba(245,158,11,0.14);
+    --suggestion-marker: #f87171;
     --radius-lg: 16px;
     --radius-md: 10px;
   }
@@ -234,6 +239,63 @@
     font-size: 14px;
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .scan-status {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    max-width: 220px;
+    text-align: right;
+  }
+  .scan-status-error { color: var(--status-rejected-dot); }
+  .scan-status-success { color: var(--status-offer-dot); }
+
+  .suggestion-row td {
+    padding: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .suggestion-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 26px 12px 23px;
+    background: rgba(255, 255, 255, 0.03);
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .suggestion-banner:hover { background: var(--surface-hover); }
+
+  .suggestion-row.unseen .suggestion-banner {
+    border-left-color: var(--suggestion-marker);
+  }
+
+  .suggestion-text strong { color: var(--text-primary); }
+
+  .suggestion-accept-btn {
+    margin-left: auto;
+    flex: none;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+  }
+  .suggestion-accept-btn:hover { background: var(--accent-hover); }
+
   .connect-card {
     display: flex;
     align-items: center;
@@ -360,13 +422,19 @@
     <div class="card">
       <div class="card-header">
         <h2>Applications</h2>
-        <select id="statusFilter">
-          <option value="all">All statuses</option>
-          <option value="Applied">Applied</option>
-          <option value="Interview">Interview</option>
-          <option value="Offer">Offer</option>
-          <option value="Rejected">Rejected</option>
-        </select>
+        <div class="header-actions">
+          <span class="scan-status" id="scanStatus"></span>
+          <button class="connect-btn" id="scanEmailsBtn">Update Application Status</button>
+          <select id="statusFilter">
+            <option value="all">All statuses</option>
+            <option value="Applied">Applied</option>
+            <option value="Progress">Progress</option>
+            <option value="Action Required">Action Required</option>
+            <option value="Interview">Interview</option>
+            <option value="Offer">Offer</option>
+            <option value="Rejected">Rejected</option>
+          </select>
+        </div>
       </div>
 
       <table>
@@ -389,12 +457,27 @@
 
   <script>
     const STATUS_META = {
-      Applied:   { dot: "var(--status-applied-dot)",   tint: "var(--status-applied-tint)" },
-      Interview: { dot: "var(--status-interview-dot)", tint: "var(--status-interview-tint)" },
-      Offer:     { dot: "var(--status-offer-dot)",     tint: "var(--status-offer-tint)" },
-      Rejected:  { dot: "var(--status-rejected-dot)",  tint: "var(--status-rejected-tint)" }
+      Applied:          { dot: "var(--status-applied-dot)",          tint: "var(--status-applied-tint)" },
+      Progress:         { dot: "var(--status-progress-dot)",         tint: "var(--status-progress-tint)" },
+      "Action Required": { dot: "var(--status-action-required-dot)", tint: "var(--status-action-required-tint)" },
+      Interview:        { dot: "var(--status-interview-dot)",        tint: "var(--status-interview-tint)" },
+      Offer:            { dot: "var(--status-offer-dot)",            tint: "var(--status-offer-tint)" },
+      Rejected:         { dot: "var(--status-rejected-dot)",         tint: "var(--status-rejected-tint)" }
     };
-    const STATUS_ORDER = ["Applied", "Interview", "Offer", "Rejected"];
+    const STATUS_ORDER = ["Applied", "Progress", "Action Required", "Interview", "Offer", "Rejected"];
+
+    // Fixed priority for sorting active (unconfirmed) AI suggestions to the
+    // top of the list -- lower number sorts first. Applications without a
+    // suggestion (ai_suggested_status is null) aren't in this map and sort
+    // after all suggested ones, per the comparator in sortedApplications().
+    const SUGGESTION_PRIORITY = {
+      "Interview Offered": 0,
+      "Action Required": 1,
+      "Progress": 2,
+      "Rejected": 3
+    };
+
+    const GMAIL_CONNECTED = {{ gmail_connected | tojson }};
 
     let apiToken = null;
     let applications = [];
@@ -422,7 +505,8 @@
       const total = applications.length;
       document.getElementById("statTotal").textContent = total;
 
-      const counts = { Applied: 0, Interview: 0, Offer: 0, Rejected: 0 };
+      const counts = {};
+      STATUS_ORDER.forEach(function (s) { counts[s] = 0; });
       applications.forEach(function (a) { counts[a.status] = (counts[a.status] || 0) + 1; });
 
       const breakdown = document.getElementById("statBreakdown");
@@ -436,13 +520,45 @@
       document.getElementById("statConversion").textContent = advanced;
     }
 
+    // Active (unconfirmed) suggestions sort first, ordered by
+    // SUGGESTION_PRIORITY; everything else keeps its incoming order
+    // (most-recently-applied-first, from the API's id-desc ordering).
+    // Array.prototype.sort is stable in all modern engines, so a plain
+    // "which group wins" comparator is enough -- ties fall through to the
+    // original relative order automatically.
+    function sortedApplications(list) {
+      return list.slice().sort(function (a, b) {
+        const aActive = !!a.ai_suggested_status;
+        const bActive = !!b.ai_suggested_status;
+        if (aActive && bActive) {
+          return SUGGESTION_PRIORITY[a.ai_suggested_status] - SUGGESTION_PRIORITY[b.ai_suggested_status];
+        }
+        if (aActive !== bActive) return aActive ? -1 : 1;
+        return 0;
+      });
+    }
+
+    function suggestionBannerRowHtml(a) {
+      if (!a.ai_suggested_status) return "";
+      const unseenClass = a.ai_suggestion_seen ? "" : " unseen";
+      return `<tr class="suggestion-row${unseenClass}" data-id="${a.id}">
+        <td colspan="4">
+          <div class="suggestion-banner" data-id="${a.id}">
+            <span class="suggestion-text">AI suggests marking this as <strong>${a.ai_suggested_status}</strong>, based on a recent email. Click to view it.</span>
+            <button class="suggestion-accept-btn" data-id="${a.id}" type="button">Accept</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+
     function renderTable() {
       const tbody = document.getElementById("applicationsBody");
       const emptyState = document.getElementById("emptyState");
 
-      const visible = currentFilter === "all"
+      const filtered = currentFilter === "all"
         ? applications
         : applications.filter(function (a) { return a.status === currentFilter; });
+      const visible = sortedApplications(filtered);
 
       if (applications.length === 0) {
         tbody.innerHTML = "";
@@ -476,12 +592,25 @@
               ${statusOptionsHtml(a.status)}
             </select>
           </td>
-        </tr>`;
+        </tr>` + suggestionBannerRowHtml(a);
       }).join("");
 
       tbody.querySelectorAll(".row-status-select").forEach(function (select) {
         select.addEventListener("change", function () {
           updateStatus(parseInt(select.dataset.id, 10), select.value);
+        });
+      });
+
+      tbody.querySelectorAll(".suggestion-accept-btn").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          acceptSuggestion(parseInt(btn.dataset.id, 10));
+        });
+      });
+
+      tbody.querySelectorAll(".suggestion-banner").forEach(function (banner) {
+        banner.addEventListener("click", function () {
+          openSuggestionSource(parseInt(banner.dataset.id, 10));
         });
       });
     }
@@ -506,6 +635,62 @@
       renderTable();
     }
 
+    async function acceptSuggestion(id) {
+      const res = await fetch(`/api/applications/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiToken}`
+        },
+        body: JSON.stringify({ accept_suggestion: true })
+      });
+
+      if (!res.ok) return;
+
+      const updated = await res.json();
+      const idx = applications.findIndex(function (a) { return a.id === updated.id; });
+      if (idx !== -1) applications[idx] = updated;
+
+      renderStats();
+      renderTable();
+    }
+
+    async function markSuggestionSeen(id) {
+      const res = await fetch(`/api/applications/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiToken}`
+        },
+        body: JSON.stringify({ ai_suggestion_seen: true })
+      });
+
+      if (!res.ok) return;
+
+      const updated = await res.json();
+      const idx = applications.findIndex(function (a) { return a.id === updated.id; });
+      if (idx !== -1) applications[idx] = updated;
+
+      renderTable();
+    }
+
+    function openSuggestionSource(id) {
+      const application = applications.find(function (a) { return a.id === id; });
+      if (!application || !application.ai_suggestion_source_email_id) return;
+
+      // Opened synchronously (before any await) so browsers still attribute
+      // it to the click gesture -- an await first would make this a
+      // programmatic popup that gets blocked.
+      window.open(
+        `https://mail.google.com/mail/u/0/#inbox/${application.ai_suggestion_source_email_id}`,
+        "_blank"
+      );
+
+      if (!application.ai_suggestion_seen) {
+        markSuggestionSeen(id);
+      }
+    }
+
     async function loadApplications() {
       const res = await fetch("/api/applications", {
         headers: { "Authorization": `Bearer ${apiToken}` }
@@ -519,6 +704,51 @@
       currentFilter = e.target.value;
       renderTable();
     });
+
+    async function scanEmails() {
+      const btn = document.getElementById("scanEmailsBtn");
+      const statusEl = document.getElementById("scanStatus");
+
+      btn.disabled = true;
+      statusEl.className = "scan-status";
+      // Multiple Gemini calls happen server-side (one per matched email) --
+      // a bare spinner would read as hung, so say what's actually happening.
+      statusEl.textContent = "Scanning your emails... this can take a minute.";
+
+      try {
+        const res = await fetch("/api/scan-emails", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${apiToken}` }
+        });
+        const result = await res.json().catch(function () { return {}; });
+
+        if (!res.ok) {
+          statusEl.textContent = result.error || "Scan failed — try again.";
+          statusEl.className = "scan-status scan-status-error";
+          return;
+        }
+
+        const count = (result.updated_applications || []).length;
+        statusEl.textContent = count > 0
+          ? `Found ${count} update${count === 1 ? "" : "s"}.`
+          : "No new updates found.";
+        statusEl.className = "scan-status scan-status-success";
+
+        await loadApplications();
+      } catch (err) {
+        statusEl.textContent = "Something went wrong — try again.";
+        statusEl.className = "scan-status scan-status-error";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    const scanEmailsBtn = document.getElementById("scanEmailsBtn");
+    if (!GMAIL_CONNECTED) {
+      scanEmailsBtn.disabled = true;
+      scanEmailsBtn.title = "Connect Gmail above to scan for updates.";
+    }
+    scanEmailsBtn.addEventListener("click", scanEmails);
 
     async function init() {
       const tokenRes = await fetch("/api/token");

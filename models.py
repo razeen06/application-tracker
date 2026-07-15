@@ -69,6 +69,11 @@ class AISummary(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     url = db.Column(db.String(500), unique=True, nullable=False, index=True)
     summary_text = db.Column(db.Text, nullable=False)
+    # The flags actually returned to the client alongside this summary --
+    # Gemini's own AI-derived flags when its JSON response parsed correctly,
+    # or the extension's regex-derived flags as a fallback otherwise (see
+    # api.py's _parse_summary_response). Cached alongside summary_text so a
+    # cache-hit returns the same flags that were originally decided on.
     flags_snapshot = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 

@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from datetime import datetime, date
 
 from flask import Blueprint, request, jsonify, g, current_app
@@ -146,16 +148,63 @@ def delete_application(application_id):
 def _build_summary_prompt(page_text):
     truncated = page_text[:MAX_PAGE_TEXT_CHARS]
     return (
-        "Summarize this job posting in exactly 3 bullet points. Plain text "
-        "only -- no markdown, no asterisks, no headers, since this renders "
-        "in a small browser extension popup. Cover exactly these three "
-        "points in this order:\n"
+        "Analyze this job posting and respond with a JSON object containing "
+        "exactly two keys: \"summary\" and \"flags\".\n\n"
+        "\"summary\": a 3-bullet plain-text summary, as a single string "
+        "(use \\n between bullets -- no markdown, no asterisks, no headers, "
+        "since this renders in a small browser extension popup). Cover "
+        "exactly these three points in this order:\n"
         "1) The role and key responsibilities.\n"
         "2) Pay or compensation, if mentioned (write \"Not mentioned\" if it isn't).\n"
         "3) Eligibility requirements such as year level, WAM/GPA cutoff, or "
         "visa status, if mentioned (write \"None mentioned\" if there aren't any).\n\n"
+        "\"flags\": a JSON array of zero or more of these exact label "
+        "strings -- include a label only if the posting genuinely matches it:\n"
+        "- \"Unpaid internship\": only if the role is unpaid AND no real "
+        "salary/pay figure (e.g. \"$20/hour\", \"$50,000/year\") is stated "
+        "anywhere in the posting. If a specific pay amount is mentioned "
+        "anywhere, do NOT include this label even if the word \"unpaid\" "
+        "appears elsewhere in the text (e.g. in an unrelated leave/policy line).\n"
+        "- \"WAM/GPA cutoff mentioned\": if a minimum WAM or GPA requirement is stated.\n"
+        "- \"'Penultimate year' requirement\": if the posting requires penultimate-year status.\n"
+        "- \"'Final year' requirement\": if the posting requires final-year status.\n"
+        "- \"Citizenship/visa restriction\": if eligibility is restricted by "
+        "citizenship, permanent residency, or visa status.\n"
+        "Use an empty array for \"flags\" if none apply.\n\n"
         f"Job posting text:\n{truncated}"
     )
+
+
+def _parse_summary_response(raw_text, fallback_flags):
+    # Gemini is asked for plain JSON, but LLMs sometimes wrap it in a
+    # markdown code fence anyway despite instructions -- strip that first.
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    if (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("summary"), str)
+        and parsed["summary"].strip()
+        and isinstance(parsed.get("flags"), list)
+        and all(isinstance(flag, str) for flag in parsed["flags"])
+    ):
+        return parsed["summary"].strip(), parsed["flags"]
+
+    # Malformed/unexpected shape -- fall back to the old plain-text-summary
+    # behavior, and to the client's own regex-derived flags rather than
+    # silently dropping flag detection entirely.
+    current_app.logger.warning(
+        "Gemini summarize response wasn't valid {summary, flags} JSON -- "
+        "falling back to plain text + client-supplied flags"
+    )
+    return raw_text, fallback_flags
 
 
 @api_routes.route("/summarize", methods=["POST"])
@@ -185,20 +234,32 @@ def summarize():
             model=GEMINI_MODEL,
             contents=_build_summary_prompt(page_text),
             config=genai_types.GenerateContentConfig(
-                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS)
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                # First line of defense for getting clean JSON back -- the
+                # parse/validate/fallback below is the second, since even
+                # JSON mode isn't a hard guarantee of the exact {summary,
+                # flags} shape we asked for.
+                response_mime_type="application/json",
             ),
         )
-        summary_text = (result.text or "").strip()
+        raw_text = (result.text or "").strip()
     except Exception as e:
         current_app.logger.warning(f"Gemini summarize call failed for {url}: {e}")
         return jsonify({"error": "Summary unavailable"}), 503
 
-    if not summary_text:
+    if not raw_text:
         current_app.logger.warning(f"Gemini summarize returned empty text for {url}")
         return jsonify({"error": "Summary unavailable"}), 503
 
+    # AI-first flag detection: prefer Gemini's own analysis (which can
+    # reason about context, e.g. an incidental "unpaid leave" mention
+    # alongside a real salary), falling back to the extension's regex-based
+    # flags (passed in the request) only if the response didn't parse.
+    client_flags = data.get("flags", [])
+    summary_text, flags = _parse_summary_response(raw_text, client_flags)
+
     summary = AISummary(url=url, summary_text=summary_text)
-    summary.set_flags_snapshot(data.get("flags", []))
+    summary.set_flags_snapshot(flags)
     db.session.add(summary)
 
     try:

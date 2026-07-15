@@ -50,6 +50,16 @@ class Application(db.Model):
     applied_date = db.Column(db.Date, default=date.today)
     notes = db.Column(db.Text)
 
+    # AI-suggested status update, sourced from a scanned Gmail message.
+    # Non-authoritative -- sits alongside `status` until the user confirms it
+    # (copies ai_suggested_status into status and clears these fields) or
+    # ignores it. One of "Interview Offered", "Action Required", "Progress",
+    # "Rejected", or null if no suggestion is pending.
+    ai_suggested_status = db.Column(db.String(50), nullable=True)
+    ai_suggestion_source_email_id = db.Column(db.String(255), nullable=True)
+    ai_suggestion_seen = db.Column(db.Boolean, nullable=False, default=False)
+    ai_suggestion_created_at = db.Column(db.DateTime, nullable=True)
+
     def get_flags(self):
         return json.loads(self.flags) if self.flags else []
 
@@ -97,3 +107,22 @@ class AISummary(db.Model):
             "flags": self.get_flags_snapshot(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class ProcessedEmail(db.Model):
+    __tablename__ = "processed_emails"
+    __table_args__ = (
+        # gmail_message_id is only unique per user, not globally -- two
+        # different users' mailboxes can't share a message anyway, but this
+        # keeps the constraint honest rather than relying on that assumption.
+        db.UniqueConstraint("user_id", "gmail_message_id", name="uq_processed_emails_user_message"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    gmail_message_id = db.Column(db.String(255), nullable=False)
+    # Null when the scan couldn't confidently match this email to a tracked
+    # application -- still recorded here so the email isn't re-processed on
+    # the next scan.
+    application_id = db.Column(db.Integer, db.ForeignKey("applications.id"), nullable=True, index=True)
+    processed_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)

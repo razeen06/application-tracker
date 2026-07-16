@@ -5,3 +5,6 @@ GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configura
 # as a per-call override to the same registered "google" Authlib client
 # rather than a second client registration.
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
+# Email/password auth (routes.py).
+MIN_PASSWORD_LENGTH = 8

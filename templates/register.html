@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register - Application Tracker</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0b0e13;
+    --surface: #12161d;
+    --text-primary: #f5f7fa;
+    --text-secondary: #9aa4b2;
+    --text-muted: #6b7684;
+    --border: rgba(255,255,255,0.08);
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-ink: #06211d;
+    --wash: rgba(255,255,255,0.05);
+    --radius-lg: 16px;
+    --radius-md: 10px;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page: #f6f7f9;
+    --surface: #ffffff;
+    --text-primary: #14181f;
+    --text-secondary: #5b6472;
+    --text-muted: #5f6b7a;
+    --border: rgba(15,23,42,0.10);
+    --wash: rgba(15,23,42,0.05);
+  }
+
+  :root[data-accent="violet"] { --accent: #7c3aed; --accent-hover: #6d28d9; --accent-ink: #ffffff; }
+  :root[data-accent="rose"] { --accent: #be123c; --accent-hover: #9f1239; --accent-ink: #ffffff; }
+  :root[data-accent="amber"] { --accent: #f59e0b; --accent-hover: #fbbf24; --accent-ink: #451a03; }
+  :root[data-accent="emerald"] { --accent: #047857; --accent-hover: #065f46; --accent-ink: #ffffff; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+  }
+
+  .landing-page {
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+  }
+
+  .brand-mark {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    background: var(--accent);
+    margin: 0 auto 24px;
+  }
+
+  h1 {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0 0 12px;
+  }
+
+  .landing-page > p {
+    font-size: 15px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin: 0 0 32px;
+  }
+
+  .email-auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: left;
+  }
+  .email-auth-form label {
+    font-size: 12.5px;
+    font-weight: 600;
+    margin-bottom: -6px;
+  }
+  .email-auth-form input {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--page);
+    color: var(--text-primary);
+  }
+  .email-auth-form input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .email-auth-form .hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: -6px 0 0;
+  }
+
+  .email-auth-submit {
+    width: 100%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    border-radius: 10px;
+    padding: 13px 20px;
+    cursor: pointer;
+    margin-top: 4px;
+    transition: background 0.15s ease;
+  }
+  .email-auth-submit:hover { background: var(--accent-hover); }
+
+  .auth-error {
+    background: rgba(208,59,59,0.12);
+    border: 1px solid rgba(208,59,59,0.3);
+    color: var(--text-primary);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin: 0 0 16px;
+    text-align: left;
+  }
+
+  .warning {
+    background: rgba(250,178,25,0.14);
+    color: var(--text-primary);
+    border: 1px solid rgba(250,178,25,0.3);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+    margin: 0 0 20px;
+  }
+
+  .auth-switch {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 22px 0 0;
+  }
+  .auth-switch a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .auth-switch a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <script>
+    (function () {
+      var theme = localStorage.getItem("theme") || "dark";
+      var accent = localStorage.getItem("accentColor") || "teal";
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.setAttribute("data-accent", accent);
+    })();
+  </script>
+
+  <section class="landing-page">
+    <div class="brand-mark"></div>
+    <h1>Create your account</h1>
+    <p>Track and manage your job applications in one place.</p>
+
+    <p class="warning">
+      We recommend using Google sign-in. Password recovery isn't available yet for
+      email accounts -- if you forget your password, you'll lose access to this account.
+    </p>
+
+    {% if error %}
+      <p class="auth-error">{{ error }}</p>
+    {% endif %}
+
+    <form class="email-auth-form" action="/register" method="post">
+      <label for="register-email-input">Email</label>
+      <input type="email" id="register-email-input" name="email" value="{{ email or '' }}" required autocomplete="email" />
+      <label for="register-password-input">Password</label>
+      <input type="password" id="register-password-input" name="password" required autocomplete="new-password" minlength="8" />
+      <p class="hint">At least 8 characters.</p>
+      <button type="submit" class="email-auth-submit">Create account</button>
+    </form>
+
+    <p class="auth-switch">Already have an account? <a href="/">Sign in</a></p>
+  </section>
+</body>
+</html>

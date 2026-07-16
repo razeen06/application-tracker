@@ -31,6 +31,12 @@ class User(db.Model):
     name = db.Column(db.String(255))
     api_token = db.Column(db.String(64), unique=True, index=True)
 
+    # Email/password login, as an alternative to Google OAuth. Nullable
+    # because Google-only accounts (the original login path) never set one --
+    # its absence is exactly how /login-email tells a Google-only account
+    # apart from an unregistered email (see routes.py).
+    password_hash = db.Column(db.String(255), nullable=True)
+
     # Gmail read-access OAuth (separate consent flow from login, see
     # /connect-gmail). Stored encrypted at rest via crypto.py -- never read or
     # written as plaintext outside that module.

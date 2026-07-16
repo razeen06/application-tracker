@@ -115,6 +115,99 @@
   }
   .google-login-button:hover { background: var(--accent-hover); }
 
+  .google-btn-wrap { position: relative; }
+  .preferred-badge {
+    position: absolute;
+    top: -9px;
+    right: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    pointer-events: none;
+  }
+
+  .auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 22px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .auth-divider::before, .auth-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .email-auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: left;
+  }
+  .email-auth-form label {
+    font-size: 12.5px;
+    font-weight: 600;
+    margin-bottom: -6px;
+  }
+  .email-auth-form input {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--page);
+    color: var(--text-primary);
+  }
+  .email-auth-form input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .email-auth-submit {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    border-radius: 10px;
+    padding: 12px 20px;
+    cursor: pointer;
+    margin-top: 4px;
+    transition: background 0.15s ease;
+  }
+  .email-auth-submit:hover { background: var(--wash); }
+
+  .auth-error {
+    background: rgba(208,59,59,0.12);
+    border: 1px solid rgba(208,59,59,0.3);
+    color: var(--text-primary);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin: 0 0 16px;
+    text-align: left;
+  }
+
+  .auth-switch {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 18px 0 0;
+  }
+  .auth-switch a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .auth-switch a:hover { text-decoration: underline; }
+
   .warning {
     background: var(--warning-tint);
     color: var(--text-primary);
@@ -312,14 +405,38 @@
     <p>Sign in to track and manage your job applications in one place.</p>
 
     {% if oauth_ready %}
-      <a href="/login" class="google-login-button">
-        Sign in with Google
-      </a>
+      <div class="google-btn-wrap">
+        <a href="/login" class="google-login-button">
+          Sign in with Google
+        </a>
+        <span class="preferred-badge">Preferred</span>
+      </div>
     {% else %}
       <p class="warning">
         Google OAuth is not configured. Check your .env file.
       </p>
     {% endif %}
+
+    <div class="auth-divider"><span>or</span></div>
+
+    <p class="warning">
+      We recommend using Google sign-in. Password recovery isn't available yet for
+      email accounts -- if you forget your password, you'll lose access to this account.
+    </p>
+
+    {% if login_error %}
+      <p class="auth-error">{{ login_error }}</p>
+    {% endif %}
+
+    <form class="email-auth-form" action="/login-email" method="post">
+      <label for="login-email-input">Email</label>
+      <input type="email" id="login-email-input" name="email" value="{{ login_email or '' }}" required autocomplete="email" />
+      <label for="login-password-input">Password</label>
+      <input type="password" id="login-password-input" name="password" required autocomplete="current-password" />
+      <button type="submit" class="email-auth-submit">Sign in</button>
+    </form>
+
+    <p class="auth-switch">Don't have an account? <a href="/register">Register</a></p>
   </section>
 
   <div class="settings-overlay" id="settingsOverlay">

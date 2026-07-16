@@ -1,13 +1,14 @@
 from datetime import datetime
 from functools import wraps
 
-from flask import Blueprint, render_template, redirect, session, url_for, current_app, jsonify
+from flask import Blueprint, render_template, redirect, request, session, url_for, current_app, jsonify
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import OAuthError
 from sqlalchemy.exc import IntegrityError
+from werkzeug.security import generate_password_hash, check_password_hash
 
 import crypto
-from constants import GMAIL_READONLY_SCOPE
+from constants import GMAIL_READONLY_SCOPE, MIN_PASSWORD_LENGTH
 from models import db, User
 
 oauth = OAuth()
@@ -87,6 +88,83 @@ def auth_google_callback():
     else:
         user.name = user_name
         db.session.commit()
+
+    return redirect(url_for("main_routes.dashboard"))
+
+
+@main_routes.route("/register", methods=["GET", "POST"])
+def register():
+    if "user_email" in session:
+        return redirect(url_for("main_routes.dashboard"))
+
+    if request.method == "GET":
+        return render_template("register.html", error=None, email="")
+
+    email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+
+    if not email or not password:
+        return render_template("register.html", error="Email and password are required.", email=email), 400
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return render_template(
+            "register.html",
+            error=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+            email=email,
+        ), 400
+
+    if User.query.filter_by(email=email).first():
+        return render_template("register.html", error="An account with this email already exists.", email=email), 400
+
+    # No name field at signup (Google accounts get a real one from Google's
+    # userinfo instead) -- the local part of the email is a reasonable
+    # stand-in for "Welcome, {{ user_name }}" on the dashboard.
+    user = User(
+        email=email,
+        name=email.split("@")[0],
+        password_hash=generate_password_hash(password),
+    )
+    user.generate_api_token()
+    db.session.add(user)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # Concurrent registration for the same brand-new email won the race.
+        db.session.rollback()
+        return render_template("register.html", error="An account with this email already exists.", email=email), 400
+
+    session["user_email"] = user.email
+    session["user_name"] = user.name
+
+    return redirect(url_for("main_routes.dashboard"))
+
+
+@main_routes.route("/login-email", methods=["GET", "POST"])
+def login_email():
+    if "user_email" in session:
+        return redirect(url_for("main_routes.dashboard"))
+
+    if request.method == "GET":
+        return redirect(url_for("main_routes.home"))
+
+    email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+    template_args = {
+        "oauth_ready": current_app.config.get("OAUTH_READY", False),
+        "login_email": email,
+    }
+
+    user = User.query.filter_by(email=email).first()
+
+    if user and not user.password_hash:
+        return render_template("index.html", login_error="This account uses Google sign-in.", **template_args), 400
+
+    if not user or not check_password_hash(user.password_hash, password):
+        return render_template("index.html", login_error="Incorrect email or password.", **template_args), 401
+
+    session["user_email"] = user.email
+    session["user_name"] = user.name
 
     return redirect(url_for("main_routes.dashboard"))
 

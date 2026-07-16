@@ -37,6 +37,12 @@ class User(db.Model):
     # apart from an unregistered email (see routes.py).
     password_hash = db.Column(db.String(255), nullable=True)
 
+    # Free text set once in Settings (skills, degree, interests) -- what
+    # suitability scoring (api.py's /api/score-suitability) compares a job
+    # posting against. Nullable/blank means "no suitability score yet",
+    # handled explicitly rather than guessing blind against nothing.
+    background_text = db.Column(db.Text, nullable=True)
+
     # Gmail read-access OAuth (separate consent flow from login, see
     # /connect-gmail). Stored encrypted at rest via crypto.py -- never read or
     # written as plaintext outside that module.
@@ -72,6 +78,15 @@ class Application(db.Model):
     ai_suggestion_seen = db.Column(db.Boolean, nullable=False, default=False)
     ai_suggestion_created_at = db.Column(db.DateTime, nullable=True)
 
+    # Application Priority scoring (see api.py's /api/score-suitability,
+    # /api/score-competitiveness, and _compute_priority_label). All three
+    # nullable -- set together when a tracked application has both scores
+    # available; left null for applications tracked before this feature
+    # existed, or when suitability couldn't be scored (no background_text).
+    suitability_score = db.Column(db.Float, nullable=True)
+    competitiveness_score = db.Column(db.Float, nullable=True)
+    priority_label = db.Column(db.String(50), nullable=True)
+
     def get_flags(self):
         return json.loads(self.flags) if self.flags else []
 
@@ -95,6 +110,9 @@ class Application(db.Model):
             "ai_suggestion_created_at": (
                 self.ai_suggestion_created_at.isoformat() if self.ai_suggestion_created_at else None
             ),
+            "suitability_score": self.suitability_score,
+            "competitiveness_score": self.competitiveness_score,
+            "priority_label": self.priority_label,
         }
 
 
@@ -124,6 +142,31 @@ class AISummary(db.Model):
             "summary": self.summary_text,
             "flags": self.get_flags_snapshot(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class CompanyProfile(db.Model):
+    __tablename__ = "company_profiles"
+
+    id = db.Column(db.Integer, primary_key=True)
+    company_name = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    competitiveness_score = db.Column(db.Float, nullable=False)
+    rationale = db.Column(db.Text, nullable=True)
+    # Whether competitiveness_score/rationale came from a real Gemini web
+    # search (Grounding with Google Search) or a plain prompt against the
+    # model's training data alone -- surfaced to the frontend as-is (see
+    # api.py's /api/score-competitiveness) so an ungrounded guess is never
+    # presented as verified research.
+    grounded = db.Column(db.Boolean, nullable=False, default=False)
+    fetched_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "company_name": self.company_name,
+            "competitiveness_score": self.competitiveness_score,
+            "rationale": self.rationale,
+            "grounded": self.grounded,
+            "fetched_at": self.fetched_at.isoformat() if self.fetched_at else None,
         }
 
 

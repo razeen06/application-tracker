@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from flask import Blueprint, request, jsonify, g, current_app
 from google import genai
@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 import crypto
 import email_matching
 import gmail_client
-from models import db, Application, ApplicationStatus, AISummary, ProcessedEmail
+from models import db, Application, ApplicationStatus, AISummary, CompanyProfile, ProcessedEmail
 from auth import token_required
 
 api_routes = Blueprint("api_routes", __name__, url_prefix="/api")
@@ -20,6 +20,7 @@ GEMINI_MODEL = "gemini-3.1-flash-lite"
 MAX_PAGE_TEXT_CHARS = 3000
 MAX_EMAIL_BODY_CHARS = 2000
 GEMINI_TIMEOUT_MS = 15000
+COMPETITIVENESS_CACHE_TTL_DAYS = 30
 
 SUGGESTION_CATEGORIES = {"Interview Offered", "Action Required", "Progress", "Rejected"}
 VALID_CLASSIFICATIONS = SUGGESTION_CATEGORIES | {"Not Relevant"}
@@ -94,6 +95,9 @@ def create_application():
     except ValueError:
         return jsonify({"error": f"Invalid status: {status_value}"}), 400
 
+    suitability_score = data.get("suitability_score")
+    competitiveness_score = data.get("competitiveness_score")
+
     application = Application(
         user_id=g.current_user.email,
         title=title,
@@ -101,9 +105,19 @@ def create_application():
         url=data.get("url"),
         status=status,
         applied_date=_parse_date(data.get("applied_date")) or date.today(),
-        notes=data.get("notes", "")
+        notes=data.get("notes", ""),
+        suitability_score=suitability_score,
+        competitiveness_score=competitiveness_score,
     )
     application.set_flags(data.get("flags", []))
+
+    if suitability_score is not None and competitiveness_score is not None:
+        # This new application hasn't been committed yet, so it can't
+        # possibly be in its own comparable bucket -- no exclude needed.
+        historical = _compute_historical_response_rate(g.current_user.email, competitiveness_score)
+        application.priority_label = _compute_priority_label(
+            suitability_score, competitiveness_score, historical[0] if historical else None
+        )
 
     db.session.add(application)
     db.session.commit()
@@ -144,6 +158,31 @@ def update_application(application_id):
         parsed = _parse_date(data["applied_date"])
         if parsed:
             application.applied_date = parsed
+
+    # Scores can arrive after the application was already tracked (e.g. the
+    # popup's two Gemini calls settle at different times) -- accepting them
+    # here, not just at creation, and recomputing priority_label whenever
+    # either one changes keeps the stored label from going stale.
+    rescored = False
+    if "suitability_score" in data:
+        application.suitability_score = data["suitability_score"]
+        rescored = True
+    if "competitiveness_score" in data:
+        application.competitiveness_score = data["competitiveness_score"]
+        rescored = True
+
+    if rescored:
+        if application.suitability_score is not None and application.competitiveness_score is not None:
+            historical = _compute_historical_response_rate(
+                g.current_user.email, application.competitiveness_score,
+                exclude_application_id=application.id,
+            )
+            application.priority_label = _compute_priority_label(
+                application.suitability_score, application.competitiveness_score,
+                historical[0] if historical else None,
+            )
+        else:
+            application.priority_label = None
 
     if data.get("accept_suggestion"):
         # "Accept as-is": copy the AI's suggested category into the real
@@ -200,6 +239,27 @@ def erase_all_applications():
     Application.query.filter_by(user_id=g.current_user.email).delete()
     db.session.commit()
     return "", 204
+
+
+@api_routes.route("/background", methods=["GET"])
+@token_required
+def get_background():
+    return jsonify({"background_text": g.current_user.background_text or ""})
+
+
+@api_routes.route("/background", methods=["PUT"])
+@token_required
+def update_background():
+    data = request.get_json(silent=True) or {}
+    # Explicit key check (not just .get(..., "")) so omitting the key
+    # entirely is a no-op rather than accidentally clearing it.
+    if "background_text" not in data:
+        return jsonify({"error": "background_text is required"}), 400
+
+    g.current_user.background_text = (data["background_text"] or "").strip() or None
+    db.session.commit()
+
+    return jsonify({"background_text": g.current_user.background_text or ""})
 
 
 @api_routes.route("/scan-history/reset", methods=["POST"])
@@ -346,6 +406,345 @@ def summarize():
     response = summary.to_dict()
     response["cached"] = False
     return jsonify(response), 201
+
+
+def _build_suitability_prompt(background_text, page_text):
+    truncated = page_text[:MAX_PAGE_TEXT_CHARS]
+    return (
+        "You are helping a job seeker judge how well they personally suit a "
+        "specific job posting, based on their own stated background.\n\n"
+        f"Candidate's background (skills, degree, interests):\n{background_text}\n\n"
+        f"Job posting:\n{truncated}\n\n"
+        "Respond with a JSON object containing exactly two keys:\n"
+        "\"score\": a number from 0 to 10 rating how well this candidate's "
+        "background suits this specific role (0 = no meaningful overlap, "
+        "10 = an excellent match). Judge honestly based on actual overlap "
+        "between their background and the role's actual requirements -- a "
+        "genuine mismatch should score low (e.g. 1-2), not a safe middle "
+        "value, and a strong match should score high (e.g. 8-10).\n"
+        "\"rationale\": one sentence explaining the score.\n"
+    )
+
+
+def _parse_suitability_response(raw_text):
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    score = parsed.get("score")
+    rationale = parsed.get("rationale")
+
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return None
+    if not isinstance(rationale, str) or not rationale.strip():
+        return None
+
+    return {"score": max(0.0, min(10.0, float(score))), "rationale": rationale.strip()}
+
+
+@api_routes.route("/score-suitability", methods=["POST"])
+@token_required
+def score_suitability():
+    data = request.get_json(silent=True) or {}
+    page_text = data.get("page_text")
+
+    if not page_text:
+        return jsonify({"error": "page_text is required"}), 400
+
+    background_text = g.current_user.background_text
+    if not background_text:
+        # Not a hard error -- this is an expected, common state (most users
+        # haven't filled in Settings yet). No score to guess at without one.
+        return jsonify({
+            "suitability_score": None,
+            "suitability_rationale": None,
+            "message": "Add your background in Settings for a suitability score",
+        })
+
+    client = _get_genai_client()
+    if client is None:
+        current_app.logger.warning("Gemini suitability scoring skipped: GEMINI_API_KEY not configured")
+        return jsonify({"error": "Suitability score unavailable"}), 503
+
+    try:
+        result = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=_build_suitability_prompt(background_text, page_text),
+            config=genai_types.GenerateContentConfig(
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                response_mime_type="application/json",
+            ),
+        )
+        raw_text = (result.text or "").strip()
+    except Exception as e:
+        current_app.logger.warning(f"Gemini suitability scoring call failed: {e}")
+        return jsonify({"error": "Suitability score unavailable"}), 503
+
+    parsed = _parse_suitability_response(raw_text)
+    if parsed is None:
+        current_app.logger.warning("Gemini suitability response wasn't valid {score, rationale} JSON")
+        return jsonify({"error": "Suitability score unavailable"}), 503
+
+    return jsonify({"suitability_score": parsed["score"], "suitability_rationale": parsed["rationale"]})
+
+
+def _build_competitiveness_prompt(company_name):
+    return (
+        f"Assess how competitive it is for a student or early-career "
+        f"candidate to get an internship or entry-level job offer at "
+        f"\"{company_name}\", on a scale of 0 to 10 -- where 0 means almost "
+        "any reasonable applicant gets an offer, and 10 means it's among the "
+        "most selective employers to get into (on par with top-tier tech "
+        "companies, elite finance/consulting firms, etc.).\n\n"
+        "Respond with a JSON object containing exactly two keys:\n"
+        "\"score\": a number from 0 to 10.\n"
+        "\"rationale\": one sentence explaining the score.\n"
+    )
+
+
+def _parse_competitiveness_response(raw_text):
+    # Same {score, rationale} shape as suitability -- reuse the same parsing
+    # rules (markdown-fence stripping, 0-10 clamping) rather than duplicating
+    # them under a different name.
+    return _parse_suitability_response(raw_text)
+
+
+def _fetch_competitiveness_from_gemini(client, company_name):
+    # Try a grounded (real Google Search) call first, so the score reflects
+    # actual current information about the company rather than the model's
+    # training data alone. Whether this is usable depends on the API key's
+    # tier -- some keys hit a quota error specific to the search tool even
+    # though plain calls work fine, so this always falls back to a plain
+    # prompt rather than surfacing that as a hard failure. Either way, the
+    # `grounded` flag reflects what actually happened, not what was
+    # attempted, so an ungrounded guess is never presented as verified
+    # research (see CompanyProfile.grounded).
+    prompt = _build_competitiveness_prompt(company_name)
+
+    try:
+        result = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt + "\nRespond with ONLY the JSON object, no other text.",
+            config=genai_types.GenerateContentConfig(
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+            ),
+        )
+        raw_text = (result.text or "").strip()
+        parsed = _parse_competitiveness_response(raw_text)
+        if parsed is not None:
+            grounding_metadata = (
+                result.candidates[0].grounding_metadata if result.candidates else None
+            )
+            actually_grounded = bool(
+                grounding_metadata and grounding_metadata.grounding_chunks
+            )
+            return parsed["score"], parsed["rationale"], actually_grounded
+        current_app.logger.warning(
+            f"Grounded competitiveness response for {company_name} wasn't valid JSON -- falling back"
+        )
+    except Exception as e:
+        current_app.logger.warning(
+            f"Grounded competitiveness call failed for {company_name}, falling back to plain: {e}"
+        )
+
+    try:
+        result = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                response_mime_type="application/json",
+            ),
+        )
+        raw_text = (result.text or "").strip()
+    except Exception as e:
+        current_app.logger.warning(f"Plain competitiveness call failed for {company_name}: {e}")
+        return None
+
+    parsed = _parse_competitiveness_response(raw_text)
+    if parsed is None:
+        current_app.logger.warning(
+            f"Plain competitiveness response for {company_name} wasn't valid {{score, rationale}} JSON"
+        )
+        return None
+
+    return parsed["score"], parsed["rationale"], False
+
+
+@api_routes.route("/score-competitiveness", methods=["POST"])
+@token_required
+def score_competitiveness():
+    data = request.get_json(silent=True) or {}
+    company_name = (data.get("company_name") or "").strip()
+
+    if not company_name:
+        return jsonify({"error": "company_name is required"}), 400
+
+    stale_cutoff = datetime.utcnow() - timedelta(days=COMPETITIVENESS_CACHE_TTL_DAYS)
+    existing = CompanyProfile.query.filter_by(company_name=company_name).first()
+
+    if existing and existing.fetched_at >= stale_cutoff:
+        response = existing.to_dict()
+        response["cached"] = True
+        return jsonify(response)
+
+    client = _get_genai_client()
+    if client is None:
+        current_app.logger.warning("Gemini competitiveness scoring skipped: GEMINI_API_KEY not configured")
+        return jsonify({"error": "Competitiveness score unavailable"}), 503
+
+    result = _fetch_competitiveness_from_gemini(client, company_name)
+    if result is None:
+        return jsonify({"error": "Competitiveness score unavailable"}), 503
+
+    score, rationale, grounded = result
+
+    if existing:
+        existing.competitiveness_score = score
+        existing.rationale = rationale
+        existing.grounded = grounded
+        existing.fetched_at = datetime.utcnow()
+    else:
+        existing = CompanyProfile(
+            company_name=company_name,
+            competitiveness_score=score,
+            rationale=rationale,
+            grounded=grounded,
+        )
+        db.session.add(existing)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # A concurrent request for the same brand-new company won the race
+        # and already inserted a row (company_name is unique) -- the Gemini
+        # call above already happened and can't be un-billed, but at least
+        # don't error out; return the row that actually won.
+        db.session.rollback()
+        existing = CompanyProfile.query.filter_by(company_name=company_name).first()
+
+    response = existing.to_dict()
+    response["cached"] = False
+    return jsonify(response), 201
+
+
+# Historical-performance signal for priority scoring -- deliberately NOT an
+# AI call. Computed directly from the user's own past Application rows: of
+# the applications they've tracked at a comparable competitiveness level
+# (+/- COMPETITIVENESS_BUCKET_RADIUS), what fraction ever moved past
+# "Applied"? This is a response rate (did the company engage at all), not an
+# advancement rate -- Interview, Action Required, Progress, Offer, and
+# Rejected all count as "responded", since all five mean the company did
+# something with the application; only "Applied" with no further movement
+# counts as no response yet.
+COMPETITIVENESS_BUCKET_RADIUS = 2.0
+MIN_HISTORICAL_BUCKET_SIZE = 3
+
+
+def _compute_historical_response_rate(user_email, competitiveness_score, exclude_application_id=None):
+    # Returns (response_rate: float in [0, 1], sample_size: int), or None if
+    # there isn't enough comparable history yet to say anything meaningful.
+    if competitiveness_score is None:
+        return None
+
+    query = Application.query.filter(
+        Application.user_id == user_email,
+        Application.competitiveness_score.isnot(None),
+        Application.competitiveness_score >= competitiveness_score - COMPETITIVENESS_BUCKET_RADIUS,
+        Application.competitiveness_score <= competitiveness_score + COMPETITIVENESS_BUCKET_RADIUS,
+    )
+    if exclude_application_id is not None:
+        query = query.filter(Application.id != exclude_application_id)
+
+    comparable = query.all()
+    if len(comparable) < MIN_HISTORICAL_BUCKET_SIZE:
+        return None
+
+    responded = sum(1 for a in comparable if a.status != ApplicationStatus.APPLIED)
+    return responded / len(comparable), len(comparable)
+
+
+# Application Priority label: a single deterministic, weighted combination
+# of suitability (AI, how well this candidate fits this role),
+# competitiveness (AI/cached, how hard this company is to get into), and the
+# user's own historical response rate at a comparable competitiveness level
+# (real, from _compute_historical_response_rate -- folded in only when
+# there's enough of it). No AI call decides the label itself -- fixed
+# thresholds on a fixed formula, confirmed with the user before finalizing
+# the wording.
+#
+# Ordered lowest to highest priority; checked top-down so the first
+# threshold a score clears wins.
+PRIORITY_LABEL_THRESHOLDS = [
+    (8.0, "Top Priority"),
+    (6.0, "Strong Match"),
+    (4.0, "Worth Applying"),
+    (0.0, "Low Priority"),
+]
+
+
+def _label_for_combined_score(combined_score):
+    for threshold, label in PRIORITY_LABEL_THRESHOLDS:
+        if combined_score >= threshold:
+            return label
+    return PRIORITY_LABEL_THRESHOLDS[-1][1]
+
+
+def _compute_priority_label(suitability_score, competitiveness_score, historical_response_rate):
+    # Both AI scores are required inputs -- without a suitability score
+    # (background_text unset) or a competitiveness score (not yet fetched),
+    # there isn't enough to combine, so no label rather than a guess built
+    # on a missing input.
+    if suitability_score is None or competitiveness_score is None:
+        return None
+
+    if historical_response_rate is not None:
+        combined = (
+            0.4 * suitability_score
+            + 0.3 * (10 - competitiveness_score)
+            + 0.3 * (historical_response_rate * 10)
+        )
+    else:
+        # Cold start: no comparable history yet, so the two AI scores split
+        # the full weight rather than historical_response_rate defaulting to
+        # a fabricated value.
+        combined = 0.5 * suitability_score + 0.5 * (10 - competitiveness_score)
+
+    return _label_for_combined_score(combined)
+
+
+@api_routes.route("/compute-priority", methods=["POST"])
+@token_required
+def compute_priority():
+    # Pure computation, no persistence -- lets the extension popup show a
+    # priority label as soon as it has both scores in hand, before the user
+    # has necessarily tracked the application yet (see popup.js).
+    data = request.get_json(silent=True) or {}
+    suitability_score = data.get("suitability_score")
+    competitiveness_score = data.get("competitiveness_score")
+
+    historical = None
+    if competitiveness_score is not None:
+        historical = _compute_historical_response_rate(g.current_user.email, competitiveness_score)
+
+    historical_rate = historical[0] if historical else None
+    label = _compute_priority_label(suitability_score, competitiveness_score, historical_rate)
+
+    return jsonify({
+        "priority_label": label,
+        "historical_response_rate": historical_rate,
+        "historical_sample_size": historical[1] if historical else 0,
+    })
 
 
 def _build_classification_prompt(subject, body):

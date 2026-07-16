@@ -277,6 +277,21 @@
     color: var(--text-primary);
   }
 
+  .priority-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 11px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .priority-badge-low { background: var(--status-rejected-tint); color: var(--status-rejected-dot); }
+  .priority-badge-worth { background: var(--status-interview-tint); color: var(--status-interview-dot); }
+  .priority-badge-strong { background: rgba(45,212,191,0.16); color: var(--accent); }
+  .priority-badge-top { background: var(--status-offer-tint); color: var(--status-offer-dot); }
+  .priority-badge-none { color: var(--text-muted); font-size: 13px; }
+
   .empty-state {
     padding: 56px 20px;
     text-align: center;
@@ -539,6 +554,31 @@
 
   .settings-helper { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 12px; }
 
+  .settings-textarea {
+    width: 100%;
+    resize: vertical;
+    background: var(--page);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+  .settings-textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .settings-inline-status {
+    display: block;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    min-height: 16px;
+  }
+  .settings-inline-status.success { color: var(--status-offer-dot); }
+  .settings-inline-status.error { color: var(--status-rejected-dot); }
+
   .settings-btn {
     display: flex;
     align-items: center;
@@ -651,6 +691,11 @@
         <div class="header-actions">
           <span class="scan-status" id="scanStatus"></span>
           <button class="connect-btn" id="scanEmailsBtn">Update Application Status</button>
+          <select id="prioritySort">
+            <option value="none">Default order</option>
+            <option value="high-to-low">Priority: High to Low</option>
+            <option value="low-to-high">Priority: Low to High</option>
+          </select>
           <select id="statusFilter">
             <option value="all">All statuses</option>
             <option value="Applied">Applied</option>
@@ -668,6 +713,7 @@
           <tr>
             <th>Role</th>
             <th>Status</th>
+            <th>Priority</th>
             <th>Applied</th>
             <th>Update</th>
           </tr>
@@ -707,6 +753,14 @@
               <button type="button" class="accent-swatch" data-accent-choice="emerald" style="--swatch-color:#047857" title="Emerald" aria-label="Emerald"></button>
             </div>
           </div>
+        </section>
+
+        <section class="settings-section">
+          <p class="settings-section-title">Application Priority</p>
+          <p class="settings-helper">Skills, degree, interests -- whatever's relevant. Used to score how well a job posting suits you (Suitability, part of each application's Priority label). Leave blank to skip suitability scoring.</p>
+          <textarea id="backgroundTextInput" class="settings-textarea" rows="4" placeholder="e.g. Final-year CS student, strong in Python and distributed systems, interested in backend/infra roles..."></textarea>
+          <button class="settings-btn" id="saveBackgroundBtn" type="button">Save background</button>
+          <span class="settings-inline-status" id="backgroundSaveStatus"></span>
         </section>
 
         <section class="settings-section">
@@ -779,9 +833,39 @@
 
     const GMAIL_CONNECTED = {{ gmail_connected | tojson }};
 
+    // Ordered lowest to highest priority, matching the fixed thresholds in
+    // api.py's PRIORITY_LABEL_THRESHOLDS -- used both for the badge color
+    // lookup and the priority sort below. Applications with no label yet
+    // (priority_label is null -- suitability or competitiveness was never
+    // scored) always sort last, regardless of sort direction, since there's
+    // nothing to rank them by.
+    const PRIORITY_ORDER = {
+      "Top Priority": 0,
+      "Strong Match": 1,
+      "Worth Applying": 2,
+      "Low Priority": 3,
+    };
+    const PRIORITY_BADGE_CLASS = {
+      "Low Priority": "priority-badge-low",
+      "Worth Applying": "priority-badge-worth",
+      "Strong Match": "priority-badge-strong",
+      "Top Priority": "priority-badge-top",
+    };
+
+    function priorityRank(label) {
+      return label in PRIORITY_ORDER ? PRIORITY_ORDER[label] : 4;
+    }
+
+    function priorityBadgeHtml(label) {
+      if (!label) return `<span class="priority-badge-none">—</span>`;
+      const cls = PRIORITY_BADGE_CLASS[label] || "priority-badge-worth";
+      return `<span class="priority-badge ${cls}">${label}</span>`;
+    }
+
     let apiToken = null;
     let applications = [];
     let currentFilter = "all";
+    let currentPrioritySort = "none";
 
     function formatDate(isoDate) {
       if (!isoDate) return "—";
@@ -834,6 +918,22 @@
           return SUGGESTION_PRIORITY[a.ai_suggested_status] - SUGGESTION_PRIORITY[b.ai_suggested_status];
         }
         if (aActive !== bActive) return aActive ? -1 : 1;
+
+        if (currentPrioritySort !== "none") {
+          const aRank = priorityRank(a.priority_label);
+          const bRank = priorityRank(b.priority_label);
+          const aUnscored = aRank === 4;
+          const bUnscored = bRank === 4;
+          // Unscored applications (no priority_label) always sort last,
+          // regardless of direction -- handled before the direction flip
+          // below, since flipping the diff's sign would otherwise put them
+          // first on "Low to High" instead of keeping them pinned at the end.
+          if (aUnscored !== bUnscored) return aUnscored ? 1 : -1;
+          if (!aUnscored) {
+            const diff = aRank - bRank;
+            if (diff !== 0) return currentPrioritySort === "high-to-low" ? diff : -diff;
+          }
+        }
         return 0;
       });
     }
@@ -842,7 +942,7 @@
       if (!a.ai_suggested_status) return "";
       const unseenClass = a.ai_suggestion_seen ? "" : " unseen";
       return `<tr class="suggestion-row${unseenClass}" data-id="${a.id}">
-        <td colspan="4">
+        <td colspan="5">
           <div class="suggestion-banner" data-id="${a.id}">
             <span class="suggestion-text">AI suggests marking this as <strong>${a.ai_suggested_status}</strong>, based on a recent email. Click to view it.</span>
             <button class="suggestion-accept-btn" data-id="${a.id}" type="button">Accept</button>
@@ -886,6 +986,7 @@
             <div class="company">${a.company}</div>
           </td>
           <td>${badgeHtml(a.status)}</td>
+          <td>${priorityBadgeHtml(a.priority_label)}</td>
           <td>${formatDate(a.applied_date)}</td>
           <td>
             <select data-id="${a.id}" class="row-status-select">
@@ -1002,6 +1103,11 @@
 
     document.getElementById("statusFilter").addEventListener("change", function (e) {
       currentFilter = e.target.value;
+      renderTable();
+    });
+
+    document.getElementById("prioritySort").addEventListener("change", function (e) {
+      currentPrioritySort = e.target.value;
       renderTable();
     });
 
@@ -1147,6 +1253,7 @@
     document.getElementById("settingsGearBtn").addEventListener("click", function () {
       reflectThemeChoiceUI();
       settingsOverlay.classList.add("open");
+      loadBackgroundText();
     });
     document.getElementById("settingsCloseBtn").addEventListener("click", function () {
       settingsOverlay.classList.remove("open");
@@ -1156,6 +1263,40 @@
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") settingsOverlay.classList.remove("open");
+    });
+
+    // ---------- Application Priority: background text ----------
+    async function loadBackgroundText() {
+      const input = document.getElementById("backgroundTextInput");
+      const res = await fetch("/api/background", {
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      input.value = data.background_text || "";
+    }
+
+    document.getElementById("saveBackgroundBtn").addEventListener("click", async function () {
+      const input = document.getElementById("backgroundTextInput");
+      const statusEl = document.getElementById("backgroundSaveStatus");
+
+      const res = await fetch("/api/background", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiToken}`
+        },
+        body: JSON.stringify({ background_text: input.value })
+      });
+
+      if (res.ok) {
+        statusEl.textContent = "Saved.";
+        statusEl.className = "settings-inline-status success";
+      } else {
+        statusEl.textContent = "Couldn't save -- try again.";
+        statusEl.className = "settings-inline-status error";
+      }
+      setTimeout(function () { statusEl.textContent = ""; statusEl.className = "settings-inline-status"; }, 2500);
     });
 
     // ---------- Settings: account actions ----------

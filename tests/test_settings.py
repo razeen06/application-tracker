@@ -54,20 +54,23 @@ def test_landing_page_settings(live_server, page):
     page.wait_for_selector("#settingsGearBtn")
     assert page.evaluate("document.documentElement.getAttribute('data-theme')") == "light"
 
-    # ---- Accent switching: verify the login button's fill actually
-    # changes color, not just the CSS variable in the abstract. ----
-    login_btn = page.locator("a.google-login-button")
-    accent_before = page.evaluate("getComputedStyle(document.querySelector('.google-login-button')).backgroundColor")
-
+    # ---- Accent switching: verify a themed element's fill actually
+    # changes color, not just the CSS variable in the abstract. Uses the
+    # settings panel's own active theme-toggle button (always rendered)
+    # rather than the Google button -- the latter only renders when
+    # oauth_ready is true (real GOOGLE_CLIENT_ID/SECRET), which isn't the
+    # case in CI. ----
     page.locator("#settingsGearBtn").click()
+    accent_before = page.evaluate("getComputedStyle(document.querySelector('.theme-toggle-btn.active')).backgroundColor")
+
     page.locator('.accent-swatch[data-accent-choice="violet"]').click()
     assert page.evaluate("document.documentElement.getAttribute('data-accent')") == "violet"
     assert page.evaluate("localStorage.getItem('accentColor')") == "violet"
-    # .google-login-button has a 150ms `transition: background` (pre-existing,
-    # for its :hover state) which also smooths this change -- give it a beat
-    # before reading the computed color back.
+    # .theme-toggle-btn has a 150ms `transition: background` (pre-existing,
+    # for the dark/light toggle itself) which also smooths this change --
+    # give it a beat before reading the computed color back.
     page.wait_for_timeout(250)
-    accent_after = page.evaluate("getComputedStyle(document.querySelector('.google-login-button')).backgroundColor")
+    accent_after = page.evaluate("getComputedStyle(document.querySelector('.theme-toggle-btn.active')).backgroundColor")
     assert accent_after != accent_before
     assert accent_after == "rgb(124, 58, 237)"  # #7c3aed
 
@@ -119,7 +122,11 @@ def test_dashboard_settings_appearance_and_signout(live_server, context, page):
     # Sign out from inside Settings actually ends the session.
     page.locator("form[action='/logout'] button").click()
     page.wait_for_url(f"{base_url}/")
-    assert page.locator(".google-login-button").count() == 1  # back on the landing page, logged out
+    # Back on the landing page, logged out -- checked via the email login
+    # form rather than the Google button, since the latter only renders
+    # when oauth_ready is true (real GOOGLE_CLIENT_ID/SECRET), which isn't
+    # the case in CI.
+    assert page.locator("#login-email-input").count() == 1
 
 
 def test_dashboard_reset_scan_history(live_server, context, page):

@@ -34,7 +34,14 @@ def create_app():
     # come out as https:// instead of http://.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-    app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    # Not just == "true": the `flask` CLI itself (auto_envvar_prefix="FLASK"
+    # binds --debug/--no-debug to this same env var) rewrites FLASK_DEBUG to
+    # "1"/"0" once it parses the value -- e.g. `flask --app app db upgrade`
+    # with FLASK_DEBUG=true in the environment leaves this as "1" by the
+    # time application code reads it, not "true". Direct invocations
+    # (werkzeug.serving, gunicorn, python app.py) never touch it, so both
+    # forms need to be accepted here.
+    app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "false").lower() in ("1", "true")
 
     secret_key = os.getenv("FLASK_SECRET_KEY")
     if not secret_key:

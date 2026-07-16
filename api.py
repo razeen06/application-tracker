@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import re
 from datetime import datetime, date, timedelta
 
+import docx
 from flask import Blueprint, request, jsonify, g, current_app
 from google import genai
 from google.genai import types as genai_types
@@ -20,8 +22,17 @@ api_routes = Blueprint("api_routes", __name__, url_prefix="/api")
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 MAX_PAGE_TEXT_CHARS = 3000
 MAX_EMAIL_BODY_CHARS = 2000
+MAX_RESUME_TEXT_CHARS = 8000
 GEMINI_TIMEOUT_MS = 15000
 COMPETITIVENESS_CACHE_TTL_DAYS = 30
+
+# Resume upload: only these two -- Gemini's document understanding accepts
+# PDF bytes directly (verified with a real API call), but explicitly
+# rejects DOCX ("400 Unsupported MIME type"), so DOCX text is extracted
+# locally via python-docx first. No other formats are accepted since
+# neither path above covers them.
+RESUME_ALLOWED_EXTENSIONS = {"pdf", "docx"}
+MAX_RESUME_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 # Application Funnel: how many days an application can sit at "Applied" with
 # no further movement before the funnel counts it as "Ghosted" rather than
@@ -357,6 +368,174 @@ def update_background():
     return jsonify({"background_text": g.current_user.background_text or ""})
 
 
+RESUME_EXTRACTION_INSTRUCTION = (
+    "You are extracting structured data from a resume. Read the attached "
+    "resume content and respond with a JSON object containing exactly four "
+    "keys:\n\n"
+    "\"skills\": a JSON array of strings -- technical and professional "
+    "skills explicitly listed or clearly demonstrated in the resume.\n\n"
+    "\"education\": a JSON array of objects, one per degree/program, each "
+    "with keys \"degree\", \"field\", and \"institution\" (use an empty "
+    "string for any that aren't stated).\n\n"
+    "\"work_experience\": a JSON array of objects, one per role, each with "
+    "keys \"role\", \"company\", \"duration\", and \"description\" (a brief "
+    "1-2 sentence summary of what they actually did in that role).\n\n"
+    "\"interests\": a JSON array of strings -- explicitly stated interests, "
+    "career goals, or the type of role they say they're looking for. Use an "
+    "empty array if none are stated -- do not guess.\n\n"
+    "Only include information that is actually present in the resume -- do "
+    "not invent or infer details that aren't there."
+)
+
+
+def _extract_docx_text(file_bytes):
+    document = docx.Document(io.BytesIO(file_bytes))
+    paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
+    # Some resume templates put work experience/skills in a table-based
+    # layout rather than plain paragraphs -- pull those cells in too.
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text.strip():
+                    paragraphs.append(cell.text)
+    return "\n".join(paragraphs)
+
+
+def _clean_resume_entry(entry, keys):
+    if not isinstance(entry, dict):
+        return None
+    cleaned = {}
+    for key in keys:
+        value = entry.get(key, "")
+        cleaned[key] = value if isinstance(value, str) else ""
+    return cleaned
+
+
+def _parse_resume_extraction_response(raw_text):
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    skills = parsed.get("skills")
+    education = parsed.get("education")
+    work_experience = parsed.get("work_experience")
+    interests = parsed.get("interests")
+
+    if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
+        return None
+    if not isinstance(interests, list) or not all(isinstance(s, str) for s in interests):
+        return None
+    if not isinstance(education, list) or not isinstance(work_experience, list):
+        return None
+
+    cleaned_education = []
+    for entry in education:
+        cleaned_entry = _clean_resume_entry(entry, ("degree", "field", "institution"))
+        if cleaned_entry is None:
+            return None
+        cleaned_education.append(cleaned_entry)
+
+    cleaned_experience = []
+    for entry in work_experience:
+        cleaned_entry = _clean_resume_entry(entry, ("role", "company", "duration", "description"))
+        if cleaned_entry is None:
+            return None
+        cleaned_experience.append(cleaned_entry)
+
+    return {
+        "skills": skills,
+        "education": cleaned_education,
+        "work_experience": cleaned_experience,
+        "interests": interests,
+    }
+
+
+@api_routes.route("/resume", methods=["GET"])
+@token_required
+def get_resume():
+    return jsonify({"resume_structured": g.current_user.get_resume_structured()})
+
+
+@api_routes.route("/resume", methods=["POST"])
+@token_required
+def upload_resume():
+    if "resume" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["resume"]
+    filename = file.filename or ""
+    if "." not in filename:
+        return jsonify({"error": "Could not determine file type -- upload a PDF or DOCX"}), 400
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    if ext not in RESUME_ALLOWED_EXTENSIONS:
+        return jsonify({"error": "Only PDF and DOCX files are supported"}), 400
+
+    file_bytes = file.read()
+    if not file_bytes:
+        return jsonify({"error": "The uploaded file is empty"}), 400
+    if len(file_bytes) > MAX_RESUME_FILE_SIZE_BYTES:
+        return jsonify({"error": "File is too large (max 10MB)"}), 400
+
+    client = _get_genai_client()
+    if client is None:
+        current_app.logger.warning("Resume parsing skipped: GEMINI_API_KEY not configured")
+        return jsonify({"error": "Resume parsing unavailable"}), 503
+
+    # Processed entirely in memory and never written to disk or stored --
+    # only the parsed structured result below is persisted (User.resume_
+    # structured). Re-uploading is cheap for the user if parsing fails, so
+    # there's no "allow re-parse without re-upload" case strong enough to
+    # justify retaining a PII-bearing raw file, even temporarily.
+    if ext == "pdf":
+        contents = [
+            genai_types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"),
+            RESUME_EXTRACTION_INSTRUCTION,
+        ]
+    else:
+        try:
+            resume_text = _extract_docx_text(file_bytes)
+        except Exception as e:
+            current_app.logger.warning(f"DOCX text extraction failed: {e}")
+            return jsonify({"error": "Couldn't read that DOCX file -- it may be corrupted"}), 400
+        if not resume_text.strip():
+            return jsonify({"error": "Couldn't find any text in that DOCX file"}), 400
+        contents = f"{RESUME_EXTRACTION_INSTRUCTION}\n\nResume text:\n{resume_text[:MAX_RESUME_TEXT_CHARS]}"
+
+    try:
+        result = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                response_mime_type="application/json",
+            ),
+        )
+        raw_text = (result.text or "").strip()
+    except Exception as e:
+        current_app.logger.warning(f"Gemini resume extraction call failed: {e}")
+        return jsonify({"error": "Couldn't parse that resume -- try again"}), 503
+
+    parsed = _parse_resume_extraction_response(raw_text)
+    if parsed is None:
+        current_app.logger.warning("Gemini resume extraction response wasn't valid structured JSON")
+        return jsonify({"error": "Couldn't parse that resume -- try again, or use a different file"}), 503
+
+    g.current_user.set_resume_structured(parsed)
+    db.session.commit()
+
+    return jsonify({"resume_structured": parsed})
+
+
 @api_routes.route("/scan-history/reset", methods=["POST"])
 @token_required
 def reset_scan_history():
@@ -503,12 +682,65 @@ def summarize():
     return jsonify(response), 201
 
 
-def _build_suitability_prompt(background_text, page_text):
+def _format_resume_for_prompt(resume_structured):
+    lines = []
+
+    skills = resume_structured.get("skills") or []
+    if skills:
+        lines.append("Skills: " + ", ".join(skills))
+
+    education = resume_structured.get("education") or []
+    if education:
+        lines.append("Education:")
+        for entry in education:
+            degree_parts = [p for p in (entry.get("degree"), entry.get("field")) if p]
+            degree_line = " in ".join(degree_parts) if degree_parts else "Degree"
+            institution = entry.get("institution")
+            lines.append(f"- {degree_line}" + (f", {institution}" if institution else ""))
+
+    work_experience = resume_structured.get("work_experience") or []
+    if work_experience:
+        lines.append("Work experience:")
+        for entry in work_experience:
+            header = entry.get("role") or "Role"
+            if entry.get("company"):
+                header += f" at {entry['company']}"
+            if entry.get("duration"):
+                header += f" ({entry['duration']})"
+            lines.append(f"- {header}")
+            if entry.get("description"):
+                lines.append(f"  {entry['description']}")
+
+    interests = resume_structured.get("interests") or []
+    if interests:
+        lines.append("Stated interests/career goals: " + ", ".join(interests))
+
+    return "\n".join(lines)
+
+
+def _build_candidate_profile_text(resume_structured, background_text):
+    # resume_structured is the primary input once a resume's been uploaded;
+    # background_text becomes supplementary -- anything the resume doesn't
+    # capture, like a role preference typed in separately (see models.py's
+    # User.background_text). Falls back to background_text alone if no
+    # resume exists, and combines both when both do -- the prompt itself
+    # just needs one "candidate's background" block either way.
+    parts = []
+    if resume_structured:
+        parts.append("Resume:\n" + _format_resume_for_prompt(resume_structured))
+        if background_text:
+            parts.append(f"Additional notes from the candidate:\n{background_text}")
+    elif background_text:
+        parts.append(f"Candidate background:\n{background_text}")
+    return "\n\n".join(parts)
+
+
+def _build_suitability_prompt(candidate_profile_text, page_text):
     truncated = page_text[:MAX_PAGE_TEXT_CHARS]
     return (
         "You are helping a job seeker judge how well they personally suit a "
-        "specific job posting, based on their own stated background.\n\n"
-        f"Candidate's background (skills, degree, interests):\n{background_text}\n\n"
+        "specific job posting, based on their own background.\n\n"
+        f"Candidate's background:\n{candidate_profile_text}\n\n"
         f"Job posting:\n{truncated}\n\n"
         "Respond with a JSON object containing exactly two keys:\n"
         "\"score\": a number from 0 to 10 rating how well this candidate's "
@@ -555,15 +787,18 @@ def score_suitability():
     if not page_text:
         return jsonify({"error": "page_text is required"}), 400
 
+    resume_structured = g.current_user.get_resume_structured()
     background_text = g.current_user.background_text
-    if not background_text:
+    if not resume_structured and not background_text:
         # Not a hard error -- this is an expected, common state (most users
         # haven't filled in Settings yet). No score to guess at without one.
         return jsonify({
             "suitability_score": None,
             "suitability_rationale": None,
-            "message": "Add your background in Settings for a suitability score",
+            "message": "Add your background or upload a resume in Settings for a suitability score",
         })
+
+    candidate_profile_text = _build_candidate_profile_text(resume_structured, background_text)
 
     client = _get_genai_client()
     if client is None:
@@ -573,7 +808,7 @@ def score_suitability():
     try:
         result = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=_build_suitability_prompt(background_text, page_text),
+            contents=_build_suitability_prompt(candidate_profile_text, page_text),
             config=genai_types.GenerateContentConfig(
                 http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
                 response_mime_type="application/json",

@@ -680,6 +680,52 @@
   .settings-inline-status.success { color: var(--status-offer-dot); }
   .settings-inline-status.error { color: var(--status-rejected-dot); }
 
+  /* ---- Resume upload + parsed summary ---- */
+  .resume-summary {
+    background: var(--page);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .resume-summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .resume-summary-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--status-offer-dot);
+  }
+  .resume-summary-section { margin-bottom: 12px; }
+  .resume-summary-section:last-child { margin-bottom: 0; }
+  .resume-summary-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 0 0 6px;
+  }
+  .resume-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .resume-chip {
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: var(--text-primary);
+  }
+  .resume-summary-item { margin-bottom: 8px; }
+  .resume-summary-item:last-child { margin-bottom: 0; }
+  .resume-summary-item-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin: 0; }
+  .resume-summary-item-sub { font-size: 12.5px; color: var(--text-secondary); margin: 2px 0 0; }
+  .resume-summary-item-desc { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; margin: 4px 0 0; }
+
   .settings-btn {
     display: flex;
     align-items: center;
@@ -873,9 +919,17 @@
 
         <section class="settings-section">
           <p class="settings-section-title">Application Priority</p>
-          <p class="settings-helper">Skills, degree, interests -- whatever's relevant. Used to score how well a job posting suits you (Suitability, part of each application's Priority label). Leave blank to skip suitability scoring.</p>
-          <textarea id="backgroundTextInput" class="settings-textarea" rows="4" placeholder="e.g. Final-year CS student, strong in Python and distributed systems, interested in backend/infra roles..."></textarea>
-          <button class="settings-btn" id="saveBackgroundBtn" type="button">Save background</button>
+          <p class="settings-helper">Upload your resume so job postings can be scored against your real skills, education, and experience (Suitability, part of each application's Priority label).</p>
+
+          <div class="resume-summary" id="resumeSummaryContainer" style="display:none;"></div>
+
+          <input type="file" id="resumeFileInput" accept=".pdf,.docx" style="display:none;" />
+          <button class="settings-btn" id="uploadResumeBtn" type="button">Upload resume (PDF or DOCX)</button>
+          <span class="settings-inline-status" id="resumeUploadStatus"></span>
+
+          <p class="settings-helper" style="margin-top:18px;">Optional -- anything your resume doesn't capture, like role preferences. Combined with your resume when scoring, or used alone if you haven't uploaded one.</p>
+          <textarea id="backgroundTextInput" class="settings-textarea" rows="3" placeholder="e.g. Strongly prefer fully-remote roles and small startups..."></textarea>
+          <button class="settings-btn" id="saveBackgroundBtn" type="button">Save notes</button>
           <span class="settings-inline-status" id="backgroundSaveStatus"></span>
         </section>
 
@@ -1619,6 +1673,7 @@
       reflectThemeChoiceUI();
       settingsOverlay.classList.add("open");
       loadBackgroundText();
+      loadResume();
     });
     document.getElementById("settingsCloseBtn").addEventListener("click", function () {
       settingsOverlay.classList.remove("open");
@@ -1662,6 +1717,154 @@
         statusEl.className = "settings-inline-status error";
       }
       setTimeout(function () { statusEl.textContent = ""; statusEl.className = "settings-inline-status"; }, 2500);
+    });
+
+    // ---------- Application Priority: resume upload ----------
+
+    // Resume content flows through an LLM before it ever reaches this page,
+    // but it's still fundamentally user-supplied text (a name, an employer,
+    // stray punctuation) -- escaped the same as any other untrusted string
+    // before going into innerHTML.
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str == null ? "" : String(str);
+      return div.innerHTML;
+    }
+
+    function setResumeStatus(text, isError) {
+      const statusEl = document.getElementById("resumeUploadStatus");
+      statusEl.textContent = text;
+      statusEl.className = "settings-inline-status" + (isError ? " error" : "");
+    }
+
+    function renderResumeSummary(structured) {
+      const container = document.getElementById("resumeSummaryContainer");
+      const uploadBtn = document.getElementById("uploadResumeBtn");
+
+      if (!structured) {
+        container.style.display = "none";
+        container.innerHTML = "";
+        uploadBtn.textContent = "Upload resume (PDF or DOCX)";
+        return;
+      }
+
+      uploadBtn.textContent = "Replace resume";
+
+      const skillsHtml = (structured.skills || [])
+        .map(function (s) { return `<span class="resume-chip">${escapeHtml(s)}</span>`; })
+        .join("");
+
+      const educationHtml = (structured.education || []).map(function (entry) {
+        const degreeLine = [entry.degree, entry.field].filter(Boolean).join(" in ");
+        return `<div class="resume-summary-item">
+          <p class="resume-summary-item-title">${escapeHtml(degreeLine || "Degree")}</p>
+          ${entry.institution ? `<p class="resume-summary-item-sub">${escapeHtml(entry.institution)}</p>` : ""}
+        </div>`;
+      }).join("");
+
+      const experienceHtml = (structured.work_experience || []).map(function (entry) {
+        const titleLine = [entry.role, entry.company ? `at ${entry.company}` : ""].filter(Boolean).join(" ");
+        return `<div class="resume-summary-item">
+          <p class="resume-summary-item-title">${escapeHtml(titleLine || "Role")}</p>
+          ${entry.duration ? `<p class="resume-summary-item-sub">${escapeHtml(entry.duration)}</p>` : ""}
+          ${entry.description ? `<p class="resume-summary-item-desc">${escapeHtml(entry.description)}</p>` : ""}
+        </div>`;
+      }).join("");
+
+      const interestsText = (structured.interests || []).join(" · ");
+
+      container.innerHTML = `
+        <div class="resume-summary-header">
+          <span class="resume-summary-label">Resume on file</span>
+        </div>
+        ${skillsHtml ? `<div class="resume-summary-section"><p class="resume-summary-section-title">Skills</p><div class="resume-chip-list">${skillsHtml}</div></div>` : ""}
+        ${educationHtml ? `<div class="resume-summary-section"><p class="resume-summary-section-title">Education</p>${educationHtml}</div>` : ""}
+        ${experienceHtml ? `<div class="resume-summary-section"><p class="resume-summary-section-title">Experience</p>${experienceHtml}</div>` : ""}
+        ${interestsText ? `<div class="resume-summary-section"><p class="resume-summary-section-title">Interests</p><p class="resume-summary-item-sub">${escapeHtml(interestsText)}</p></div>` : ""}
+      `;
+      container.style.display = "block";
+    }
+
+    async function loadResume() {
+      const res = await fetch("/api/resume", {
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      renderResumeSummary(data.resume_structured);
+    }
+
+    // XMLHttpRequest (not fetch) specifically for its upload.progress event --
+    // the only way to distinguish "still uploading the file" from "the
+    // server has it and is now parsing" without that, the status would sit
+    // on one vague message for the whole request.
+    function uploadResumeFile(file) {
+      return new Promise(function (resolve, reject) {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/resume");
+        xhr.setRequestHeader("Authorization", `Bearer ${apiToken}`);
+
+        xhr.upload.addEventListener("progress", function (e) {
+          if (e.lengthComputable) {
+            setResumeStatus(`Uploading… ${Math.round((e.loaded / e.total) * 100)}%`);
+          }
+        });
+        xhr.upload.addEventListener("load", function () {
+          setResumeStatus("Parsing your resume…");
+        });
+
+        xhr.onload = function () {
+          let data;
+          try {
+            data = JSON.parse(xhr.responseText);
+          } catch (err) {
+            reject(new Error("Couldn't parse that resume -- try again."));
+            return;
+          }
+          if (xhr.status === 200) {
+            resolve(data);
+          } else {
+            reject(new Error(data.error || "Couldn't parse that resume -- try again."));
+          }
+        };
+        xhr.onerror = function () { reject(new Error("Upload failed -- check your connection and try again.")); };
+
+        const formData = new FormData();
+        formData.append("resume", file);
+        xhr.send(formData);
+      });
+    }
+
+    document.getElementById("uploadResumeBtn").addEventListener("click", function () {
+      document.getElementById("resumeFileInput").click();
+    });
+
+    document.getElementById("resumeFileInput").addEventListener("change", async function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const ext = (file.name.split(".").pop() || "").toLowerCase();
+      if (ext !== "pdf" && ext !== "docx") {
+        setResumeStatus("Only PDF and DOCX files are supported.", true);
+        e.target.value = "";
+        return;
+      }
+
+      const uploadBtn = document.getElementById("uploadResumeBtn");
+      uploadBtn.disabled = true;
+      setResumeStatus("Uploading…");
+
+      try {
+        const data = await uploadResumeFile(file);
+        renderResumeSummary(data.resume_structured);
+        setResumeStatus("Resume parsed successfully.");
+        setTimeout(function () { setResumeStatus(""); }, 3000);
+      } catch (err) {
+        setResumeStatus(err.message, true);
+      } finally {
+        uploadBtn.disabled = false;
+        e.target.value = ""; // allow re-selecting the same file next time
+      }
     });
 
     // ---------- Settings: account actions ----------

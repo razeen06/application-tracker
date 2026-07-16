@@ -37,11 +37,23 @@ class User(db.Model):
     # apart from an unregistered email (see routes.py).
     password_hash = db.Column(db.String(255), nullable=True)
 
-    # Free text set once in Settings (skills, degree, interests) -- what
-    # suitability scoring (api.py's /api/score-suitability) compares a job
-    # posting against. Nullable/blank means "no suitability score yet",
-    # handled explicitly rather than guessing blind against nothing.
+    # Optional supplementary free text (role preferences, anything a resume
+    # wouldn't capture) -- what suitability scoring (api.py's
+    # /api/score-suitability) falls back to, or combines with
+    # resume_structured, when comparing a job posting against the candidate.
+    # No longer the primary input once a resume is uploaded (see
+    # resume_structured below), but never cleared automatically just because
+    # one was -- the two are independent, both-optional fields.
     background_text = db.Column(db.Text, nullable=True)
+
+    # JSON (stored as text, same pattern as Application.flags) holding the
+    # structured result of parsing an uploaded resume -- skills, education,
+    # work_experience, interests (see api.py's _build_resume_extraction_prompt
+    # for the exact shape). The raw uploaded file itself is never stored --
+    # parsed entirely in-memory within the upload request and discarded
+    # immediately after (see /api/upload-resume) -- so this parsed result is
+    # the only trace of the resume that persists.
+    resume_structured = db.Column(db.Text, nullable=True)
 
     # Gmail read-access OAuth (separate consent flow from login, see
     # /connect-gmail). Stored encrypted at rest via crypto.py -- never read or
@@ -53,6 +65,12 @@ class User(db.Model):
     def generate_api_token(self):
         self.api_token = secrets.token_hex(32)
         return self.api_token
+
+    def get_resume_structured(self):
+        return json.loads(self.resume_structured) if self.resume_structured else None
+
+    def set_resume_structured(self, data):
+        self.resume_structured = json.dumps(data) if data is not None else None
 
 
 class Application(db.Model):

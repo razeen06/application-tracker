@@ -22,8 +22,14 @@ def upgrade():
     # artifact as every prior migration in this project (SQLite has no
     # native enum type, so it always diffs against the model regardless of
     # what actually changed). Dropped; unrelated to this migration.
-    with op.batch_alter_table('users', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('resume_structured', sa.Text(), nullable=True))
+    # Render runs this migration during every deploy.  Use an idempotent
+    # Postgres statement so a retry after an interrupted deploy cannot leave
+    # the app importing User before the column exists.
+    if op.get_bind().dialect.name == 'postgresql':
+        op.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_structured TEXT')
+    else:
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('resume_structured', sa.Text(), nullable=True))
 
 
 def downgrade():

@@ -67,7 +67,15 @@ class User(db.Model):
         return self.api_token
 
     def get_resume_structured(self):
-        return json.loads(self.resume_structured) if self.resume_structured else None
+        if not self.resume_structured:
+            return None
+        try:
+            value = json.loads(self.resume_structured)
+        except (TypeError, json.JSONDecodeError):
+            # A malformed legacy value should not take down a user's
+            # dashboard. Treat it as absent and let them upload again.
+            return None
+        return value if isinstance(value, dict) else None
 
     def set_resume_structured(self, data):
         self.resume_structured = json.dumps(data) if data is not None else None

@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 from flask import Blueprint, request, jsonify, g, current_app
 from google import genai
 from google.genai import types as genai_types
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 import crypto
@@ -21,6 +22,14 @@ MAX_PAGE_TEXT_CHARS = 3000
 MAX_EMAIL_BODY_CHARS = 2000
 GEMINI_TIMEOUT_MS = 15000
 COMPETITIVENESS_CACHE_TTL_DAYS = 30
+
+# Application Funnel: how many days an application can sit at "Applied" with
+# no further movement before the funnel counts it as "Ghosted" rather than
+# "Awaiting Response". This is a display-time bucket only (see
+# _compute_application_funnel) -- never written back to Application.status,
+# since a company can still respond after this threshold and an application
+# shouldn't be permanently mislabeled just because it crossed a date line.
+GHOSTED_THRESHOLD_DAYS = 21
 
 SUGGESTION_CATEGORIES = {"Interview Offered", "Action Required", "Progress", "Rejected"}
 VALID_CLASSIFICATIONS = SUGGESTION_CATEGORIES | {"Not Relevant"}
@@ -239,6 +248,92 @@ def erase_all_applications():
     Application.query.filter_by(user_id=g.current_user.email).delete()
     db.session.commit()
     return "", 204
+
+
+# Every application starts life as "Applied" (Application.status's default),
+# so the funnel is a single-hop fan-out from that one source node to
+# whichever bucket each application currently sits in -- there's no stored
+# history of status transitions to chart a deeper multi-hop path through, so
+# a one-hop "Applied -> current bucket" fan-out is the honest shape rather
+# than implying a specific journey we can't actually observe. Ordered
+# roughly best-outcome-first; purely cosmetic (fixes rendering order in the
+# frontend), doesn't affect the counts.
+FUNNEL_STAGE_ORDER = [
+    "Offer", "Interview", "Progress", "Action Required",
+    "Awaiting Response", "Rejected", "Ghosted",
+]
+
+
+def _compute_application_funnel(user_email):
+    # Pure SQL/ORM aggregation -- no AI involved, this is just counting.
+    ghosted_cutoff = date.today() - timedelta(days=GHOSTED_THRESHOLD_DAYS)
+
+    non_applied_counts = dict(
+        db.session.query(Application.status, func.count(Application.id))
+        .filter(Application.user_id == user_email, Application.status != ApplicationStatus.APPLIED)
+        .group_by(Application.status)
+        .all()
+    )
+
+    # "Ghosted" is a derived/virtual bucket, computed fresh on every call --
+    # never stored on the row -- specifically because a company can still
+    # respond after crossing this date line, so a stored label would risk
+    # staying wrong after the fact.
+    ghosted_count = Application.query.filter(
+        Application.user_id == user_email,
+        Application.status == ApplicationStatus.APPLIED,
+        Application.applied_date.isnot(None),
+        Application.applied_date <= ghosted_cutoff,
+    ).count()
+
+    still_applied_count = Application.query.filter(
+        Application.user_id == user_email,
+        Application.status == ApplicationStatus.APPLIED,
+    ).count()
+    # Applications with no applied_date at all can't have their age judged,
+    # so they fall into "Awaiting Response" alongside ones too recent to be
+    # ghosted, rather than being silently dropped from the funnel.
+    awaiting_count = still_applied_count - ghosted_count
+
+    stage_counts = {
+        "Interview": non_applied_counts.get(ApplicationStatus.INTERVIEW, 0),
+        "Action Required": non_applied_counts.get(ApplicationStatus.ACTION_REQUIRED, 0),
+        "Progress": non_applied_counts.get(ApplicationStatus.PROGRESS, 0),
+        "Offer": non_applied_counts.get(ApplicationStatus.OFFER, 0),
+        "Rejected": non_applied_counts.get(ApplicationStatus.REJECTED, 0),
+        "Ghosted": ghosted_count,
+        "Awaiting Response": awaiting_count,
+    }
+
+    flows = [
+        {"from_stage": "Applied", "to_stage": stage, "count": stage_counts[stage]}
+        for stage in FUNNEL_STAGE_ORDER
+        if stage_counts[stage] > 0
+    ]
+
+    total = sum(stage_counts.values())
+    responded = (
+        stage_counts["Interview"] + stage_counts["Action Required"]
+        + stage_counts["Progress"] + stage_counts["Offer"] + stage_counts["Rejected"]
+    )
+
+    return {
+        "total": total,
+        "flows": flows,
+        "stage_counts": stage_counts,
+        "summary": {
+            "total": total,
+            "responded": responded,
+            "ghosted": stage_counts["Ghosted"],
+            "awaiting_response": stage_counts["Awaiting Response"],
+        },
+    }
+
+
+@api_routes.route("/application-funnel", methods=["GET"])
+@token_required
+def get_application_funnel():
+    return jsonify(_compute_application_funnel(g.current_user.email))
 
 
 @api_routes.route("/background", methods=["GET"])

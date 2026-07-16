@@ -30,6 +30,12 @@
     --status-progress-tint: rgba(59,130,246,0.14);
     --status-action-required-dot: #f59e0b;
     --status-action-required-tint: rgba(245,158,11,0.14);
+    /* "Ghosted" isn't a real ApplicationStatus -- it's the funnel's derived
+       bucket for a stale "Applied" (see api.py's GHOSTED_THRESHOLD_DAYS). A
+       muted violet-grey reads as "faded away" without borrowing rejected's
+       red (a company ghosting isn't the same as an explicit no). */
+    --status-ghosted-dot: #8b7cb8;
+    --status-ghosted-tint: rgba(139,124,184,0.16);
     --suggestion-marker: #f87171;
     --wash-subtle: rgba(255,255,255,0.03);
     --radius-lg: 16px;
@@ -291,6 +297,101 @@
   .priority-badge-strong { background: rgba(45,212,191,0.16); color: var(--accent); }
   .priority-badge-top { background: var(--status-offer-tint); color: var(--status-offer-dot); }
   .priority-badge-none { color: var(--text-muted); font-size: 13px; }
+
+  /* ---- Application Funnel ---- */
+  .funnel-card { margin-bottom: 28px; padding: 0; }
+
+  .funnel-preview {
+    display: block;
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 20px 26px;
+    cursor: pointer;
+    font-family: inherit;
+    color: inherit;
+    text-align: left;
+    transition: background 0.15s ease;
+  }
+  .funnel-preview:hover { background: var(--surface-hover); }
+
+  .funnel-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .funnel-preview-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .funnel-chevron {
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+    flex: none;
+  }
+  .funnel-card.expanded .funnel-chevron { transform: rotate(180deg); }
+
+  .funnel-summary-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 10px 0 12px;
+  }
+  .funnel-summary-text strong { color: var(--text-primary); font-weight: 600; }
+
+  .funnel-bar {
+    display: flex;
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--wash-subtle);
+  }
+  .funnel-bar-segment {
+    height: 100%;
+    transition: opacity 0.15s ease;
+  }
+  .funnel-preview:hover .funnel-bar-segment { opacity: 0.85; }
+
+  .funnel-cold-start {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    padding: 2px 0;
+  }
+
+  .funnel-expanded {
+    padding: 4px 26px 26px;
+    border-top: 1px solid var(--border);
+  }
+
+  .funnel-sankey-container {
+    width: 100%;
+    margin-top: 18px;
+  }
+  .funnel-sankey-container svg { width: 100%; height: auto; display: block; }
+
+  .funnel-link {
+    cursor: pointer;
+    transition: stroke-opacity 0.15s ease;
+  }
+
+  .funnel-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    padding: 7px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    z-index: 200;
+    display: none;
+    white-space: nowrap;
+  }
 
   .empty-state {
     padding: 56px 20px;
@@ -682,6 +783,21 @@
         <p class="label">Reached Out</p>
         <p class="value" id="statConversion">0</p>
         <p class="sub">Applications that progressed to interview or offer</p>
+      </div>
+    </div>
+
+    <div class="card funnel-card" id="funnelCard">
+      <button class="funnel-preview" id="funnelPreviewBtn" type="button" aria-expanded="false">
+        <div class="funnel-preview-header">
+          <span class="funnel-preview-title">Application Funnel</span>
+          <svg class="funnel-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+        <div id="funnelPreviewBody"></div>
+      </button>
+      <div class="funnel-expanded" id="funnelExpanded" style="display:none;">
+        <div class="funnel-sankey-container" id="funnelSankeyContainer"></div>
       </div>
     </div>
 
@@ -1156,11 +1272,260 @@
     }
     scanEmailsBtn.addEventListener("click", scanEmails);
 
+    // ---------- Application Funnel ----------
+
+    // Below this many tracked applications, per-bucket percentages are noise
+    // rather than signal -- mirrors api.py's MIN_HISTORICAL_BUCKET_SIZE
+    // convention for the same reason. UI-only threshold: the backend always
+    // returns real counts regardless of how few there are; this just decides
+    // how to *display* a very small sample honestly instead of a misleading
+    // mini-chart.
+    const FUNNEL_MIN_FOR_PREVIEW = 3;
+
+    // Mirrors api.py's FUNNEL_STAGE_ORDER -- cosmetic display order only.
+    const FUNNEL_STAGE_ORDER = ["Offer", "Interview", "Progress", "Action Required", "Awaiting Response", "Rejected", "Ghosted"];
+
+    // Reuses the exact same CSS custom properties as STATUS_META above (as
+    // var() strings, not resolved hex) so the funnel's colors always match
+    // the status badges elsewhere on this page, in both themes, with zero
+    // duplication of the actual color values.
+    const FUNNEL_STAGE_COLOR = {
+      "Applied": "var(--accent)",
+      "Offer": "var(--status-offer-dot)",
+      "Interview": "var(--status-interview-dot)",
+      "Progress": "var(--status-progress-dot)",
+      "Action Required": "var(--status-action-required-dot)",
+      "Awaiting Response": "var(--status-applied-dot)",
+      "Rejected": "var(--status-rejected-dot)",
+      "Ghosted": "var(--status-ghosted-dot)",
+    };
+
+    let funnelData = null;
+    let funnelExpandedOnce = false;
+    let d3LoadPromise = null;
+    let funnelDataReadyResolve;
+    const funnelDataReady = new Promise(function (resolve) { funnelDataReadyResolve = resolve; });
+
+    function loadScript(src) {
+      return new Promise(function (resolve, reject) {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+
+    // D3 + d3-sankey (~95KB gzipped combined) only loads on first expand --
+    // the collapsed preview never pays for it, and it's ~14x lighter than
+    // Plotly's minimal dist bundle for the same job.
+    function ensureD3Loaded() {
+      if (!d3LoadPromise) {
+        d3LoadPromise = loadScript("https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js")
+          .then(function () { return loadScript("https://cdn.jsdelivr.net/npm/d3-sankey@0.12/dist/d3-sankey.min.js"); });
+      }
+      return d3LoadPromise;
+    }
+
+    function renderFunnelPreview() {
+      const body = document.getElementById("funnelPreviewBody");
+      if (!funnelData) {
+        body.innerHTML = `<p class="funnel-cold-start">Loading…</p>`;
+        return;
+      }
+
+      const total = funnelData.total;
+      const summary = funnelData.summary;
+
+      if (total < FUNNEL_MIN_FOR_PREVIEW) {
+        body.innerHTML = total === 0
+          ? `<p class="funnel-cold-start">Track a few applications to see your funnel here.</p>`
+          : `<p class="funnel-cold-start">${total} application${total === 1 ? "" : "s"} tracked so far — track a few more for a meaningful funnel breakdown.</p>`;
+        return;
+      }
+
+      const segments = FUNNEL_STAGE_ORDER
+        .map(function (stage) { return { stage: stage, count: funnelData.stage_counts[stage] }; })
+        .filter(function (s) { return s.count > 0; });
+
+      const barHtml = segments.map(function (s) {
+        const pct = (s.count / total) * 100;
+        return `<div class="funnel-bar-segment" style="width:${pct}%; background:${FUNNEL_STAGE_COLOR[s.stage]}" title="${s.stage}: ${s.count}"></div>`;
+      }).join("");
+
+      body.innerHTML = `
+        <p class="funnel-summary-text">
+          <strong>${total}</strong> application${total === 1 ? "" : "s"} tracked
+          &middot; <strong>${summary.responded}</strong> responded
+          &middot; <strong>${summary.ghosted}</strong> ghosted
+        </p>
+        <div class="funnel-bar">${barHtml}</div>
+      `;
+    }
+
+    async function loadFunnel() {
+      const res = await fetch("/api/application-funnel", {
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (res.ok) {
+        funnelData = await res.json();
+        renderFunnelPreview();
+      }
+      funnelDataReadyResolve();
+    }
+
+    function showFunnelTooltip(event, text) {
+      let tooltip = document.getElementById("funnelTooltip");
+      if (!tooltip) {
+        tooltip = document.createElement("div");
+        tooltip.id = "funnelTooltip";
+        tooltip.className = "funnel-tooltip";
+        document.body.appendChild(tooltip);
+      }
+      tooltip.textContent = text;
+      tooltip.style.display = "block";
+      moveFunnelTooltip(event);
+    }
+
+    function moveFunnelTooltip(event) {
+      const tooltip = document.getElementById("funnelTooltip");
+      if (!tooltip) return;
+      tooltip.style.left = (event.clientX + 14) + "px";
+      tooltip.style.top = (event.clientY + 14) + "px";
+    }
+
+    function hideFunnelTooltip() {
+      const tooltip = document.getElementById("funnelTooltip");
+      if (tooltip) tooltip.style.display = "none";
+    }
+
+    function renderFunnelSankey() {
+      const container = document.getElementById("funnelSankeyContainer");
+      container.innerHTML = "";
+
+      if (!funnelData || funnelData.total < FUNNEL_MIN_FOR_PREVIEW) {
+        container.innerHTML = `<p class="funnel-cold-start">Not enough tracked applications yet for a detailed diagram.</p>`;
+        return;
+      }
+
+      const stageCounts = funnelData.stage_counts;
+      const presentStages = FUNNEL_STAGE_ORDER.filter(function (s) { return stageCounts[s] > 0; });
+      const nodeNames = ["Applied"].concat(presentStages);
+      const nodeIndex = {};
+      nodeNames.forEach(function (name, i) { nodeIndex[name] = i; });
+
+      const nodes = nodeNames.map(function (name) {
+        return { name: name, count: name === "Applied" ? funnelData.total : stageCounts[name] };
+      });
+      const links = funnelData.flows.map(function (f) {
+        return { source: nodeIndex[f.from_stage], target: nodeIndex[f.to_stage], value: f.count };
+      });
+
+      const width = Math.max(560, container.clientWidth || 640);
+      const height = Math.max(260, presentStages.length * 48);
+      const leftMargin = 96;
+      const rightMargin = 180;
+
+      const svg = d3.select(container).append("svg")
+        .attr("viewBox", [0, 0, width, height])
+        .attr("preserveAspectRatio", "xMidYMid meet");
+
+      const sankeyGen = d3.sankey()
+        .nodeWidth(12)
+        .nodePadding(24)
+        .extent([[leftMargin, 10], [width - rightMargin, height - 10]]);
+
+      const graph = sankeyGen({
+        nodes: nodes.map(function (d) { return Object.assign({}, d); }),
+        links: links.map(function (d) { return Object.assign({}, d); }),
+      });
+
+      svg.append("g")
+        .attr("fill", "none")
+        .selectAll("path")
+        .data(graph.links)
+        .join("path")
+        .attr("class", "funnel-link")
+        .attr("d", d3.sankeyLinkHorizontal())
+        .attr("stroke", function (d) { return FUNNEL_STAGE_COLOR[d.target.name] || "var(--text-muted)"; })
+        .attr("stroke-opacity", 0.38)
+        .attr("stroke-width", function (d) { return Math.max(1.5, d.width); })
+        .on("mouseenter", function (event, d) {
+          d3.select(this).attr("stroke-opacity", 0.7);
+          showFunnelTooltip(event, `${d.source.name} → ${d.target.name}: ${d.value}`);
+        })
+        .on("mousemove", moveFunnelTooltip)
+        .on("mouseleave", function () {
+          d3.select(this).attr("stroke-opacity", 0.38);
+          hideFunnelTooltip();
+        });
+
+      svg.append("g")
+        .selectAll("rect")
+        .data(graph.nodes)
+        .join("rect")
+        .attr("x", function (d) { return d.x0; })
+        .attr("y", function (d) { return d.y0; })
+        .attr("width", function (d) { return d.x1 - d.x0; })
+        .attr("height", function (d) { return Math.max(2, d.y1 - d.y0); })
+        .attr("rx", 3)
+        .attr("fill", function (d) { return FUNNEL_STAGE_COLOR[d.name] || "var(--accent)"; })
+        .on("mouseenter", function (event, d) { showFunnelTooltip(event, `${d.name}: ${d.count}`); })
+        .on("mousemove", moveFunnelTooltip)
+        .on("mouseleave", hideFunnelTooltip);
+
+      svg.append("g")
+        .selectAll("text")
+        .data(graph.nodes)
+        .join("text")
+        .attr("x", function (d) { return d.name === "Applied" ? d.x0 - 10 : d.x1 + 10; })
+        .attr("y", function (d) { return (d.y0 + d.y1) / 2; })
+        .attr("dy", "0.35em")
+        .attr("text-anchor", function (d) { return d.name === "Applied" ? "end" : "start"; })
+        .attr("fill", "var(--text-primary)")
+        .style("font-size", "12.5px")
+        .style("font-weight", "600")
+        .style("font-family", "inherit")
+        .text(function (d) { return `${d.name}  ${d.count}`; });
+    }
+
+    async function toggleFunnel() {
+      const card = document.getElementById("funnelCard");
+      const btn = document.getElementById("funnelPreviewBtn");
+      const expandedPanel = document.getElementById("funnelExpanded");
+      const isExpanded = card.classList.contains("expanded");
+
+      if (isExpanded) {
+        card.classList.remove("expanded");
+        btn.setAttribute("aria-expanded", "false");
+        expandedPanel.style.display = "none";
+        return;
+      }
+
+      card.classList.add("expanded");
+      btn.setAttribute("aria-expanded", "true");
+      expandedPanel.style.display = "block";
+
+      if (!funnelExpandedOnce) {
+        funnelExpandedOnce = true;
+        const container = document.getElementById("funnelSankeyContainer");
+        container.innerHTML = `<p class="funnel-cold-start">Loading diagram…</p>`;
+        try {
+          await Promise.all([ensureD3Loaded(), funnelDataReady]);
+          renderFunnelSankey();
+        } catch (err) {
+          container.innerHTML = `<p class="funnel-cold-start">Couldn't load the diagram — try again in a moment.</p>`;
+        }
+      }
+    }
+
+    document.getElementById("funnelPreviewBtn").addEventListener("click", toggleFunnel);
+
     async function init() {
       const tokenRes = await fetch("/api/token");
       const tokenData = await tokenRes.json();
       apiToken = tokenData.token;
-      await loadApplications();
+      await Promise.all([loadApplications(), loadFunnel()]);
     }
 
     init();

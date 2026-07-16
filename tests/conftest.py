@@ -17,15 +17,28 @@ def _free_port():
 
 @pytest.fixture(scope="session")
 def live_server():
-    # A throwaway SQLite file rather than the dev app.db -- tests create
-    # their own schema via db.create_all() (straight from the current models,
-    # no Alembic involved) and shouldn't touch real local data.
-    db_fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(db_fd)
-    os.remove(db_path)
+    # Respects a DATABASE_URL already set in the environment -- CI points
+    # this at a real Postgres service container, since the migration-drift
+    # bugs we've hit repeatedly only ever showed up against Postgres, never
+    # against SQLite (SQLite stores enum columns as a plain, unconstrained
+    # VARCHAR; Postgres enforces a real native enum type). Falls back to a
+    # throwaway SQLite file for local runs, where no DATABASE_URL is set.
+    #
+    # Either way, tests create their own schema straight from the current
+    # models via db.create_all() -- no Alembic involved. The migration
+    # chain itself is verified separately (see the "migrations" CI job),
+    # applying every migration in order against a fresh Postgres database.
+    database_url = os.environ.get("DATABASE_URL")
+    sqlite_path = None
+
+    if not database_url:
+        db_fd, sqlite_path = tempfile.mkstemp(suffix=".db")
+        os.close(db_fd)
+        os.remove(sqlite_path)
+        database_url = f"sqlite:///{sqlite_path}"
 
     os.environ["FLASK_DEBUG"] = "true"  # also relaxes SESSION_COOKIE_SECURE for plain-http testing
-    os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+    os.environ["DATABASE_URL"] = database_url
     for key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "EXTENSION_ORIGIN", "GEMINI_API_KEY"):
         os.environ.pop(key, None)
 
@@ -48,5 +61,5 @@ def live_server():
 
     server.shutdown()
     thread.join(timeout=5)
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    if sqlite_path and os.path.exists(sqlite_path):
+        os.remove(sqlite_path)

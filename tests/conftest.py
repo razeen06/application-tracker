@@ -39,8 +39,17 @@ def live_server():
 
     os.environ["FLASK_DEBUG"] = "true"  # also relaxes SESSION_COOKIE_SECURE for plain-http testing
     os.environ["DATABASE_URL"] = database_url
-    for key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "EXTENSION_ORIGIN", "GEMINI_API_KEY"):
-        os.environ.pop(key, None)
+    # Set to "" rather than popped: `from app import create_app` below
+    # triggers app.py's own load_dotenv() call for the first time in this
+    # process, and load_dotenv() fills in anything not *present* in
+    # os.environ -- so a pop()'d (absent) key gets silently refilled from a
+    # local .env's real value, while an explicitly-set-to-empty key is left
+    # alone (python-dotenv only checks presence, not truthiness). Confirmed
+    # necessary the hard way: SENTRY_DSN kept leaking through as a real
+    # client via the pop()-based version of this, transmitting test-run
+    # errors to the real Sentry project.
+    for key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "EXTENSION_ORIGIN", "GEMINI_API_KEY", "SENTRY_DSN"):
+        os.environ[key] = ""
 
     from app import create_app
     from models import db

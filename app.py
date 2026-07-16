@@ -3,6 +3,8 @@ from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 import os
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
 
 from routes import main_routes, oauth
 from api import api_routes
@@ -25,7 +27,38 @@ def _database_uri():
     return "sqlite:///" + os.path.join(basedir, "app.db")
 
 
+def _is_debug_enabled():
+    # Not just == "true": the `flask` CLI itself (auto_envvar_prefix="FLASK"
+    # binds --debug/--no-debug to this same env var) rewrites FLASK_DEBUG to
+    # "1"/"0" once it parses the value -- e.g. `flask --app app db upgrade`
+    # with FLASK_DEBUG=true in the environment leaves this as "1" by the
+    # time application code reads it, not "true". Direct invocations
+    # (werkzeug.serving, gunicorn, python app.py) never touch it, so both
+    # forms need to be accepted here.
+    return os.getenv("FLASK_DEBUG", "false").lower() in ("1", "true")
+
+
 def create_app():
+    is_debug = _is_debug_enabled()
+
+    # Initialized before anything else so it can catch errors from the rest
+    # of setup too, not just request handling. Skipped entirely without a
+    # DSN -- local dev with no Sentry account configured shouldn't fail (or
+    # silently start reporting to someone else's project).
+    sentry_dsn = os.getenv("SENTRY_DSN")
+    if sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            integrations=[FlaskIntegration()],
+            # Performance tracing, not error capture -- errors are always
+            # captured regardless of this. Sampled well below 100% purely to
+            # keep transaction volume (and quota/cost) down.
+            traces_sample_rate=0.1,
+            # Keeps errors from local runs/testing out of the same bucket as
+            # real production errors, without needing a separate DSN/project.
+            environment="development" if is_debug else "production",
+        )
+
     app = Flask(__name__)
 
     # Behind Render's TLS-terminating proxy the app sees plain HTTP
@@ -34,14 +67,7 @@ def create_app():
     # come out as https:// instead of http://.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-    # Not just == "true": the `flask` CLI itself (auto_envvar_prefix="FLASK"
-    # binds --debug/--no-debug to this same env var) rewrites FLASK_DEBUG to
-    # "1"/"0" once it parses the value -- e.g. `flask --app app db upgrade`
-    # with FLASK_DEBUG=true in the environment leaves this as "1" by the
-    # time application code reads it, not "true". Direct invocations
-    # (werkzeug.serving, gunicorn, python app.py) never touch it, so both
-    # forms need to be accepted here.
-    app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "false").lower() in ("1", "true")
+    app.config["DEBUG"] = is_debug
 
     secret_key = os.getenv("FLASK_SECRET_KEY")
     if not secret_key:

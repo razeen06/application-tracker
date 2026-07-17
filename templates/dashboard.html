@@ -1440,7 +1440,7 @@
       btn.disabled = true;
       range.disabled = true;
       statusEl.className = "scan-status";
-      statusEl.textContent = "Searching confirmation emails… this can take a minute.";
+      statusEl.textContent = "Searching application emails… this can take a minute.";
 
       try {
         const lookbackDays = parseInt(range.value, 10);
@@ -1449,6 +1449,8 @@
         let searched = 0;
         let added = 0;
         let skippedDuplicates = 0;
+        let filteredOut = 0;
+        let fetchFailures = 0;
 
         do {
           const requestBody = { lookback_days: lookbackDays };
@@ -1472,6 +1474,8 @@
           searched += result.searched || 0;
           added += (result.added_applications || []).length;
           skippedDuplicates += result.skipped_duplicates || 0;
+          filteredOut += result.filtered_out || 0;
+          fetchFailures += result.fetch_failures || 0;
           pageToken = result.next_page_token || null;
           statusEl.textContent = `Checked ${searched} likely email${searched === 1 ? "" : "s"}…`;
 
@@ -1484,9 +1488,15 @@
         const duplicateText = skippedDuplicates
           ? ` ${skippedDuplicates} already tracked.`
           : "";
+        const filteredText = filteredOut
+          ? ` ${filteredOut} unrelated or incomplete email${filteredOut === 1 ? "" : "s"} filtered out.`
+          : "";
+        const fetchFailureText = fetchFailures
+          ? ` ${fetchFailures} email${fetchFailures === 1 ? "" : "s"} could not be read.`
+          : "";
         statusEl.textContent = added
-          ? `Added ${added} previous application${added === 1 ? "" : "s"}.${duplicateText}`
-          : `No new previous applications found.${duplicateText}`;
+          ? `Added ${added} previous application${added === 1 ? "" : "s"}.${duplicateText}${filteredText}${fetchFailureText}`
+          : `No new previous applications found.${duplicateText}${filteredText}${fetchFailureText}`;
         statusEl.className = "scan-status scan-status-success";
 
         await Promise.all([loadApplications(), loadFunnel()]);

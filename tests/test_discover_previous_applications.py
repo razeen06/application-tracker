@@ -2,6 +2,7 @@
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
 from flask.sessions import SecureCookieSessionInterface
@@ -62,6 +63,29 @@ class _Models:
 
 class _Client:
     models = _Models()
+
+
+def test_discovery_dedup_keeps_distinct_cohort_years():
+    import api
+
+    existing = [SimpleNamespace(
+        company="CSL Limited",
+        title="CSL 2026 Intern Programme",
+        url="https://mail.google.com/mail/u/0/#all/first-thread",
+    )]
+
+    assert api._is_discovery_duplicate(
+        existing,
+        "CSL",
+        "CSL Intern Program",
+        "https://mail.google.com/mail/u/0/#all/reminder-thread",
+    )
+    assert not api._is_discovery_duplicate(
+        existing,
+        "CSL",
+        "CSL 2027 Intern Program",
+        "https://mail.google.com/mail/u/0/#all/next-year-thread",
+    )
 
 
 def test_sync_previous_applications_and_hover_delete(
@@ -134,6 +158,8 @@ def test_sync_previous_applications_and_hover_delete(
 
     assert len(seen_search) == 2
     assert '"thank you for applying"' in seen_search[0]["query"]
+    assert '"application has progressed"' in seen_search[0]["query"]
+    assert "subject:assessment" in seen_search[0]["query"]
     assert "after:" in seen_search[0]["query"]
     assert all(
         call["max_messages"] == api.APPLICATION_DISCOVERY_CANDIDATES_PER_PAGE
@@ -141,6 +167,9 @@ def test_sync_previous_applications_and_hover_delete(
     )
     assert [call["page_token"] for call in seen_search] == [None, "second-page"]
     assert "1 already tracked" in page.locator("#previousSyncStatus").inner_text()
+    assert "1 unrelated or incomplete email filtered out" in page.locator(
+        "#previousSyncStatus"
+    ).inner_text()
 
     new_row = page.locator('.application-row:has-text("Northstar Labs")')
     assert new_row.count() == 1
@@ -189,4 +218,141 @@ def test_sync_previous_applications_and_hover_delete(
             gmail_message_id="msg-status-update"
         ).one()
         assert processed.application_id is None
+        db.session.remove()
+
+
+def test_recall_search_adds_progressed_applications_and_filters_unsubmitted(
+    live_server, monkeypatch
+):
+    app, _ = live_server
+    from models import Application, User, db
+    import api
+    import crypto
+
+    encryption_key = Fernet.generate_key().decode()
+    monkeypatch.setenv("GMAIL_TOKEN_ENCRYPTION_KEY", encryption_key)
+    monkeypatch.setattr(crypto, "_fernet", None)
+
+    user_email = "recall-sync@example.com"
+    with app.app_context():
+        user = User(email=user_email, name="Recall Sync")
+        api_token = user.generate_api_token()
+        user.gmail_refresh_token = crypto.encrypt_token("fake-refresh-token")
+        db.session.add(user)
+        db.session.commit()
+        db.session.remove()
+
+    applied_date = (date.today() - timedelta(days=5)).isoformat()
+    candidate_emails = {
+        "msg-csl-progress": {
+            "subject": "CSL 2026 Intern Program: Online Assessment Invitation",
+            "sender": "graduates@csl.com.au",
+            "body": "Congratulations! Your application for the CSL Intern Program has progressed.",
+        },
+        "msg-csl-reminder": {
+            "subject": "Reminder: Complete Your Online Assessment for the CSL Intern Program",
+            "sender": "graduates@csl.com.au",
+            "body": "As the next step in our selection process, complete your online assessment.",
+        },
+        "msg-australiansuper": {
+            "subject": "AustralianSuper Intern Program - Online Interactive Assessment",
+            "sender": "noreply-graduates@pushapply.com",
+            "body": "Your application for the AustralianSuper Intern Program has progressed.",
+        },
+        "msg-nab": {
+            "subject": "NAB Summer Intern Program: Online Assessment Invitation",
+            "sender": "nabearlycareertalent@fusiongc.com.au",
+            "body": "Your application for the NAB Summer Intern Program has progressed.",
+        },
+        "msg-incomplete": {
+            "subject": "Finalise Your Application for the CSL Intern Program",
+            "sender": "graduates@csl.com.au",
+            "body": "Your application is still in progress and has not yet been submitted.",
+        },
+    }
+
+    seen_queries = []
+    seen_prompts = []
+    monkeypatch.setattr(gmail_client, "refresh_access_token", lambda *args: "access-token")
+
+    def fake_search(access_token, query, max_messages=100, page_token=None):
+        seen_queries.append(query)
+        assert page_token is None
+        return list(candidate_emails), None
+
+    timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    monkeypatch.setattr(gmail_client, "search_message_page", fake_search)
+    monkeypatch.setattr(
+        gmail_client,
+        "get_message_details",
+        lambda access_token, message_id: {
+            "id": message_id,
+            "thread_id": f"thread-{message_id}",
+            "subject": candidate_emails[message_id]["subject"],
+            "sender": candidate_emails[message_id]["sender"],
+            "internal_date": timestamp_ms,
+            "body": candidate_emails[message_id]["body"],
+        },
+    )
+
+    class _RecallModels:
+        def generate_content(self, model, contents, config):
+            seen_prompts.append(contents)
+            return _Result(json.dumps({"applications": [
+                {
+                    "message_id": "msg-csl-progress",
+                    "company": "CSL",
+                    "title": "CSL 2026 Intern Program",
+                    "applied_date": applied_date,
+                },
+                {
+                    "message_id": "msg-csl-reminder",
+                    "company": "CSL Limited",
+                    "title": "CSL Intern Programme",
+                    "applied_date": applied_date,
+                },
+                {
+                    "message_id": "msg-australiansuper",
+                    "company": "AustralianSuper",
+                    "title": "2026/27 Intern Program",
+                    "applied_date": applied_date,
+                },
+                {
+                    "message_id": "msg-nab",
+                    "company": "NAB",
+                    "title": "2026 Summer Intern Program",
+                    "applied_date": applied_date,
+                },
+            ]}))
+
+    class _RecallClient:
+        models = _RecallModels()
+
+    monkeypatch.setattr(api, "_get_genai_client", lambda: _RecallClient())
+
+    response = app.test_client().post(
+        "/api/discover-applications",
+        headers={"Authorization": f"Bearer {api_token}"},
+        json={"lookback_days": 30},
+    )
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["searched"] == 5
+    assert len(result["added_applications"]) == 3
+    assert result["skipped_duplicates"] == 1
+    assert result["filtered_out"] == 1
+    assert result["fetch_failures"] == 0
+
+    assert '"application has progressed"' in seen_queries[0]
+    assert "subject:assessment" in seen_queries[0]
+    assert "from:pushapply.com" in seen_queries[0]
+    assert "has not yet been submitted" in seen_prompts[0]
+    assert "later-stage email is valid evidence" in seen_prompts[0]
+
+    with app.app_context():
+        applications = Application.query.filter_by(user_id=user_email).all()
+        assert {application.company for application in applications} == {
+            "CSL", "AustralianSuper", "NAB"
+        }
+        assert all("recruitment-progression" in application.notes for application in applications)
         db.session.remove()

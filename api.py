@@ -29,17 +29,40 @@ APPLICATION_DISCOVERY_LOOKBACK_DAYS = {7, 30, 60, 90}
 APPLICATION_DISCOVERY_CANDIDATES_PER_PAGE = 25
 APPLICATION_DISCOVERY_BATCH_SIZE = 25
 
-# Gmail does the cheap first pass. Gemini only receives messages containing
-# one of these confirmation-style phrases, instead of reading an arbitrary
-# slice of the user's inbox.
+# Gmail does the cheap first pass. Keep this deliberately recall-first: many
+# employers never send a literal confirmation, but a later assessment or
+# progression email still proves that an application was submitted. Gemini
+# remains the strict second pass, so broad subject/sender signals can improve
+# recall without turning newsletters and unfinished applications into rows.
 APPLICATION_DISCOVERY_GMAIL_QUERY = (
     '{"thank you for applying" "thanks for applying" '
     '"thank you for your application" "application received" '
     '"received your application" "application confirmation" '
     '"application submitted" "your application has been submitted" '
     '"successfully applied" "application acknowledgement" '
-    '"application acknowledgment"}'
+    '"application acknowledgment" "your application has progressed" '
+    '"application has progressed" "moving on to the next stage" '
+    '"next stage of our recruitment process" '
+    '"next step in our selection process" '
+    'subject:application subject:assessment subject:candidate '
+    'from:myworkday.com from:workday.com from:greenhouse.io from:lever.co '
+    'from:smartrecruiters.com from:icims.com from:ashbyhq.com '
+    'from:pageuppeople.com from:pushapply.com from:fusiongc.com.au}'
 )
+
+APPLICATION_DISCOVERY_TITLE_STOP_WORDS = {
+    "a", "an", "at", "for", "job", "of", "position", "role", "the"
+}
+APPLICATION_DISCOVERY_TITLE_ALIASES = {
+    "engineering": "engineer",
+    "internship": "intern",
+    "internships": "intern",
+    "programme": "program",
+    "programmes": "program",
+}
+APPLICATION_DISCOVERY_COMPANY_SUFFIXES = {
+    "corp", "corporation", "inc", "limited", "llc", "ltd", "plc", "pty"
+}
 
 # Resume upload: only these two -- Gemini's document understanding accepts
 # PDF bytes directly (verified with a real API call), but explicitly
@@ -1159,13 +1182,20 @@ def _build_application_discovery_prompt(messages):
         )
 
     return (
-        "You are identifying historical job applications from confirmation "
-        "emails. For each email below, decide whether it clearly confirms "
+        "You are identifying historical job applications from application-"
+        "related emails. For each email below, decide whether it clearly confirms "
         "that the recipient submitted an application for a job, internship, "
-        "graduate program, or similar role. Do not count newsletters, job "
-        "alerts, recruiter outreach, interview invitations without an "
-        "application confirmation, generic account creation, or application "
-        "status emails that do not establish that an application was submitted.\n\n"
+        "graduate program, or similar role. A later-stage email is valid "
+        "evidence when it explicitly says the recipient's application has "
+        "progressed, or clearly invites them to an assessment or next stage "
+        "for a named employer and role/program. It does not need to be the "
+        "original submission confirmation.\n\n"
+        "Do not count newsletters, job alerts, recruiter outreach unrelated "
+        "to an existing application, generic account creation or candidate "
+        "verification, expressions of interest, or reminders saying an "
+        "application is still in progress, incomplete, or has not yet been "
+        "submitted. An invitation to finish or submit an application is not "
+        "proof that it was submitted.\n\n"
         "Respond with a JSON object containing exactly one key, "
         '"applications". Its value must be an array containing only confirmed '
         "applications. Each item must contain exactly these string keys:\n"
@@ -1174,8 +1204,10 @@ def _build_application_discovery_prompt(messages):
         '- "title": the role/program title.\n'
         '- "applied_date": YYYY-MM-DD, using the explicit submission date if '
         "stated, otherwise the supplied received date.\n\n"
-        "Be conservative: if an email is ambiguous, leave it out. Never invent "
-        "a company or role.\n\n"
+        "If several emails refer to the same application, return only the "
+        "clearest one, preferring a direct confirmation over a reminder. Be "
+        "conservative: if an email is ambiguous, leave it out. Never invent a "
+        "company or role.\n\n"
         + "\n\n--- EMAIL ---\n".join(email_blocks)
     )
 
@@ -1229,14 +1261,38 @@ def _discovery_normalize(value):
     return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
 
+def _discovery_company_key(value):
+    tokens = _discovery_normalize(value).split()
+    if tokens and tokens[0] == "the":
+        tokens = tokens[1:]
+    while tokens and tokens[-1] in APPLICATION_DISCOVERY_COMPANY_SUFFIXES:
+        tokens.pop()
+    return " ".join(tokens)
+
+
+def _discovery_title_tokens(value):
+    tokens = set()
+    for token in _discovery_normalize(value).split():
+        if token.isdigit() or token in APPLICATION_DISCOVERY_TITLE_STOP_WORDS:
+            continue
+        tokens.add(APPLICATION_DISCOVERY_TITLE_ALIASES.get(token, token))
+    return tokens
+
+
+def _discovery_title_years(value):
+    return set(re.findall(r"\b(?:19|20)\d{2}\b", _discovery_normalize(value)))
+
+
 def _is_discovery_duplicate(existing_applications, company, title, source_url):
-    company_key = _discovery_normalize(company)
+    company_key = _discovery_company_key(company)
     title_key = _discovery_normalize(title)
+    title_tokens = _discovery_title_tokens(title)
+    title_years = _discovery_title_years(title)
 
     for application in existing_applications:
         if application.url == source_url:
             return True
-        existing_company = _discovery_normalize(application.company)
+        existing_company = _discovery_company_key(application.company)
         existing_title = _discovery_normalize(application.title)
         if existing_company != company_key:
             continue
@@ -1250,6 +1306,21 @@ def _is_discovery_duplicate(existing_applications, company, title, source_url):
             existing_title in title_key or title_key in existing_title
         ):
             return True
+        # Assessment reminders commonly vary only by a year or by wording
+        # such as "Internship Programme" vs "Intern Program". Token aliases
+        # and a high overlap threshold catch those without collapsing two
+        # genuinely different internships at the same employer.
+        existing_tokens = _discovery_title_tokens(application.title)
+        existing_years = _discovery_title_years(application.title)
+        different_explicit_years = (
+            existing_years and title_years and existing_years.isdisjoint(title_years)
+        )
+        if not different_explicit_years and min(len(existing_tokens), len(title_tokens)) >= 2:
+            overlap = len(existing_tokens & title_tokens) / min(
+                len(existing_tokens), len(title_tokens)
+            )
+            if overlap >= 0.8:
+                return True
     return False
 
 
@@ -1321,15 +1392,19 @@ def discover_applications():
             "searched": 0,
             "added_applications": [],
             "skipped_duplicates": 0,
+            "filtered_out": 0,
+            "fetch_failures": 0,
             "next_page_token": next_page_token,
         })
 
     messages = []
+    fetch_failures = 0
     for message_id in message_ids:
         try:
             metadata = gmail_client.get_message_details(access_token, message_id)
         except gmail_client.GmailScanError as e:
             current_app.logger.warning(f"Historical application email fetch failed for {message_id}: {e}")
+            fetch_failures += 1
             continue
 
         received_date = datetime.fromtimestamp(
@@ -1365,6 +1440,11 @@ def discover_applications():
             return jsonify({"error": "Couldn't analyse those emails -- try again"}), 503
         discovered.extend(parsed)
 
+    discovered_message_ids = {item["message_id"] for item in discovered}
+    filtered_out = sum(
+        1 for message in messages if message["id"] not in discovered_message_ids
+    )
+
     metadata_by_id = {message["id"]: message for message in messages}
     existing_applications = Application.query.filter_by(user_id=user.email).all()
     added = []
@@ -1393,7 +1473,7 @@ def discover_applications():
             url=source_url,
             status=ApplicationStatus.APPLIED,
             applied_date=parsed_date,
-            notes="Discovered from a Gmail application confirmation.",
+            notes="Discovered from a Gmail application or recruitment-progression email.",
         )
         application.set_flags([])
         db.session.add(application)
@@ -1406,6 +1486,8 @@ def discover_applications():
         "searched": len(messages),
         "added_applications": [application.to_dict() for application in added],
         "skipped_duplicates": skipped_duplicates,
+        "filtered_out": filtered_out,
+        "fetch_failures": fetch_failures,
         "next_page_token": next_page_token,
     })
 

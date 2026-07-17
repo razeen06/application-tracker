@@ -37,32 +37,42 @@ def refresh_access_token(refresh_token, client_id, client_secret):
     return access_token
 
 
+def search_message_page(access_token, query, max_messages=100, page_token=None):
+    """Return one bounded Gmail search page and its continuation token."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"q": query, "maxResults": min(max(int(max_messages), 1), 100)}
+    if page_token:
+        params["pageToken"] = page_token
+
+    try:
+        response = requests.get(
+            f"{GMAIL_API_BASE}/messages",
+            headers=headers,
+            params=params,
+            timeout=GMAIL_REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise GmailScanError(f"Gmail search request failed: {e}")
+
+    if response.status_code != 200:
+        raise GmailScanError(f"Gmail search failed: {response.status_code} {response.text}")
+
+    data = response.json()
+    ids = [message["id"] for message in data.get("messages", [])]
+    return ids, data.get("nextPageToken")
+
+
 def search_message_ids(access_token, query):
     # Paginates through every page rather than just the first -- a first-ever
     # scan spanning months of applications could easily exceed one page.
     ids = []
     page_token = None
-    headers = {"Authorization": f"Bearer {access_token}"}
 
     while True:
-        params = {"q": query, "maxResults": 100}
-        if page_token:
-            params["pageToken"] = page_token
-
-        try:
-            response = requests.get(
-                f"{GMAIL_API_BASE}/messages", headers=headers, params=params, timeout=GMAIL_REQUEST_TIMEOUT
-            )
-        except requests.RequestException as e:
-            raise GmailScanError(f"Gmail search request failed: {e}")
-
-        if response.status_code != 200:
-            raise GmailScanError(f"Gmail search failed: {response.status_code} {response.text}")
-
-        data = response.json()
-        ids.extend(message["id"] for message in data.get("messages", []))
-
-        page_token = data.get("nextPageToken")
+        page_ids, page_token = search_message_page(
+            access_token, query, max_messages=100, page_token=page_token
+        )
+        ids.extend(page_ids)
         if not page_token:
             break
 
@@ -147,3 +157,37 @@ def get_message_body(access_token, message_id):
         raise GmailScanError(f"Gmail body fetch failed for {message_id}: {response.status_code} {response.text}")
 
     return _extract_plain_text_body(response.json().get("payload", {}))
+
+
+def get_message_details(access_token, message_id):
+    """Fetch the headers, timestamp, and body in one Gmail API request."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"format": "full"}
+
+    try:
+        response = requests.get(
+            f"{GMAIL_API_BASE}/messages/{message_id}",
+            headers=headers,
+            params=params,
+            timeout=GMAIL_REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise GmailScanError(f"Gmail message fetch failed for {message_id}: {e}")
+
+    if response.status_code != 200:
+        raise GmailScanError(
+            f"Gmail message fetch failed for {message_id}: "
+            f"{response.status_code} {response.text}"
+        )
+
+    data = response.json()
+    payload = data.get("payload", {})
+    headers_list = payload.get("headers", [])
+    return {
+        "id": message_id,
+        "thread_id": data.get("threadId") or message_id,
+        "subject": _extract_header(headers_list, "Subject"),
+        "sender": _extract_header(headers_list, "From"),
+        "internal_date": int(data.get("internalDate") or 0),
+        "body": _extract_plain_text_body(payload),
+    }

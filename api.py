@@ -2,7 +2,7 @@ import io
 import json
 import os
 import re
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 import docx
 from flask import Blueprint, request, jsonify, g, current_app
@@ -25,6 +25,21 @@ MAX_EMAIL_BODY_CHARS = 2000
 MAX_RESUME_TEXT_CHARS = 8000
 GEMINI_TIMEOUT_MS = 15000
 COMPETITIVENESS_CACHE_TTL_DAYS = 30
+APPLICATION_DISCOVERY_LOOKBACK_DAYS = {7, 30, 60, 90}
+APPLICATION_DISCOVERY_CANDIDATES_PER_PAGE = 25
+APPLICATION_DISCOVERY_BATCH_SIZE = 25
+
+# Gmail does the cheap first pass. Gemini only receives messages containing
+# one of these confirmation-style phrases, instead of reading an arbitrary
+# slice of the user's inbox.
+APPLICATION_DISCOVERY_GMAIL_QUERY = (
+    '{"thank you for applying" "thanks for applying" '
+    '"thank you for your application" "application received" '
+    '"received your application" "application confirmation" '
+    '"application submitted" "your application has been submitted" '
+    '"successfully applied" "application acknowledgement" '
+    '"application acknowledgment"}'
+)
 
 # Resume upload: only these two -- Gemini's document understanding accepts
 # PDF bytes directly (verified with a real API call), but explicitly
@@ -244,6 +259,12 @@ def delete_application(application_id):
     if not application:
         return jsonify({"error": "Application not found"}), 404
 
+    # Status-scan history may point at this row. Keep the processed-message
+    # record (so the same email is not analysed again) but release its
+    # foreign key before deleting the application.
+    ProcessedEmail.query.filter_by(application_id=application.id).update(
+        {"application_id": None}, synchronize_session=False
+    )
     db.session.delete(application)
     db.session.commit()
 
@@ -256,6 +277,9 @@ def erase_all_applications():
     # Settings' "Erase all applications" -- a full, unscoped wipe for the
     # signed-in account. No undo; the client is expected to have already
     # confirmed with the user before calling this.
+    ProcessedEmail.query.filter_by(user_id=g.current_user.id).update(
+        {"application_id": None}, synchronize_session=False
+    )
     Application.query.filter_by(user_id=g.current_user.email).delete()
     db.session.commit()
     return "", 204
@@ -1119,6 +1143,271 @@ def _parse_classification_response(raw_text):
         return parsed["classification"]
 
     return None
+
+
+def _build_application_discovery_prompt(messages):
+    email_blocks = []
+    for message in messages:
+        email_blocks.append(
+            "\n".join([
+                f"Message ID: {message['id']}",
+                f"Subject: {message['subject']}",
+                f"Sender: {message['sender']}",
+                f"Received date: {message['received_date']}",
+                f"Body: {message['body'][:MAX_EMAIL_BODY_CHARS]}",
+            ])
+        )
+
+    return (
+        "You are identifying historical job applications from confirmation "
+        "emails. For each email below, decide whether it clearly confirms "
+        "that the recipient submitted an application for a job, internship, "
+        "graduate program, or similar role. Do not count newsletters, job "
+        "alerts, recruiter outreach, interview invitations without an "
+        "application confirmation, generic account creation, or application "
+        "status emails that do not establish that an application was submitted.\n\n"
+        "Respond with a JSON object containing exactly one key, "
+        '"applications". Its value must be an array containing only confirmed '
+        "applications. Each item must contain exactly these string keys:\n"
+        '- "message_id": copy the supplied Message ID exactly.\n'
+        '- "company": the employer or organisation.\n'
+        '- "title": the role/program title.\n'
+        '- "applied_date": YYYY-MM-DD, using the explicit submission date if '
+        "stated, otherwise the supplied received date.\n\n"
+        "Be conservative: if an email is ambiguous, leave it out. Never invent "
+        "a company or role.\n\n"
+        + "\n\n--- EMAIL ---\n".join(email_blocks)
+    )
+
+
+def _parse_application_discovery_response(raw_text, allowed_message_ids):
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    applications = parsed.get("applications") if isinstance(parsed, dict) else None
+    if not isinstance(applications, list):
+        return None
+
+    validated = []
+    seen_message_ids = set()
+    for item in applications:
+        if not isinstance(item, dict):
+            return None
+        message_id = item.get("message_id")
+        company = item.get("company")
+        title = item.get("title")
+        applied_date = item.get("applied_date")
+        if (
+            not isinstance(message_id, str)
+            or message_id not in allowed_message_ids
+            or message_id in seen_message_ids
+            or not isinstance(company, str)
+            or not company.strip()
+            or not isinstance(title, str)
+            or not title.strip()
+            or not isinstance(applied_date, str)
+        ):
+            continue
+        seen_message_ids.add(message_id)
+        validated.append({
+            "message_id": message_id,
+            "company": company.strip()[:200],
+            "title": title.strip()[:200],
+            "applied_date": applied_date,
+        })
+    return validated
+
+
+def _discovery_normalize(value):
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _is_discovery_duplicate(existing_applications, company, title, source_url):
+    company_key = _discovery_normalize(company)
+    title_key = _discovery_normalize(title)
+
+    for application in existing_applications:
+        if application.url == source_url:
+            return True
+        existing_company = _discovery_normalize(application.company)
+        existing_title = _discovery_normalize(application.title)
+        if existing_company != company_key:
+            continue
+        if existing_title == title_key:
+            return True
+        # Confirmation emails often shorten a title slightly ("Software
+        # Engineer Intern" vs "Software Engineering Internship"). Only use
+        # containment for reasonably descriptive titles to avoid treating
+        # every generic "Intern" application at a company as the same role.
+        if min(len(existing_title), len(title_key)) >= 8 and (
+            existing_title in title_key or title_key in existing_title
+        ):
+            return True
+    return False
+
+
+def _gmail_message_url(thread_id):
+    # #all works for inbox, archived, and labelled messages alike.
+    return f"https://mail.google.com/mail/u/0/#all/{thread_id}"
+
+
+def _refresh_gmail_access_token(user):
+    try:
+        refresh_token = crypto.decrypt_token(user.gmail_refresh_token)
+    except ValueError as e:
+        current_app.logger.warning(f"Gmail token decrypt failed for user {user.email}: {e}")
+        return None, (jsonify({"error": "Gmail connection is invalid -- please reconnect Gmail"}), 400)
+
+    try:
+        access_token = gmail_client.refresh_access_token(
+            refresh_token,
+            current_app.config.get("GOOGLE_CLIENT_ID"),
+            current_app.config.get("GOOGLE_CLIENT_SECRET"),
+        )
+    except gmail_client.GmailScanError as e:
+        current_app.logger.warning(f"Gmail token refresh failed for user {user.email}: {e}")
+        return None, (jsonify({"error": "Gmail token refresh failed -- please reconnect Gmail"}), 502)
+    return access_token, None
+
+
+@api_routes.route("/discover-applications", methods=["POST"])
+@token_required
+def discover_applications():
+    user = g.current_user
+    if not user.gmail_refresh_token:
+        return jsonify({"error": "Gmail not connected"}), 400
+
+    data = request.get_json(silent=True) or {}
+    try:
+        lookback_days = int(data.get("lookback_days", 30))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a valid email search range"}), 400
+    if lookback_days not in APPLICATION_DISCOVERY_LOOKBACK_DAYS:
+        return jsonify({"error": "Search range must be 7, 30, 60, or 90 days"}), 400
+
+    page_token = data.get("page_token")
+    if page_token is not None and not isinstance(page_token, str):
+        return jsonify({"error": "Invalid Gmail search page"}), 400
+
+    access_token, error_response = _refresh_gmail_access_token(user)
+    if error_response:
+        return error_response
+
+    since = date.today() - timedelta(days=lookback_days)
+    query = f"after:{since.strftime('%Y/%m/%d')} {APPLICATION_DISCOVERY_GMAIL_QUERY}"
+    try:
+        # One bounded page keeps each request within Render's web-service
+        # timeout. The dashboard follows next_page_token until every matching
+        # email in the selected date range has been considered.
+        message_ids, next_page_token = gmail_client.search_message_page(
+            access_token,
+            query,
+            max_messages=APPLICATION_DISCOVERY_CANDIDATES_PER_PAGE,
+            page_token=page_token,
+        )
+    except gmail_client.GmailScanError as e:
+        current_app.logger.warning(f"Historical application search failed for user {user.email}: {e}")
+        return jsonify({"error": "Gmail search failed"}), 502
+
+    if not message_ids:
+        return jsonify({
+            "searched": 0,
+            "added_applications": [],
+            "skipped_duplicates": 0,
+            "next_page_token": next_page_token,
+        })
+
+    messages = []
+    for message_id in message_ids:
+        try:
+            metadata = gmail_client.get_message_details(access_token, message_id)
+        except gmail_client.GmailScanError as e:
+            current_app.logger.warning(f"Historical application email fetch failed for {message_id}: {e}")
+            continue
+
+        received_date = datetime.fromtimestamp(
+            metadata["internal_date"] / 1000, tz=timezone.utc
+        ).date() if metadata["internal_date"] else since
+        messages.append({
+            **metadata,
+            "received_date": received_date.isoformat(),
+        })
+
+    client = _get_genai_client()
+    if client is None:
+        return jsonify({"error": "Historical application sync unavailable"}), 503
+
+    discovered = []
+    for start in range(0, len(messages), APPLICATION_DISCOVERY_BATCH_SIZE):
+        batch = messages[start:start + APPLICATION_DISCOVERY_BATCH_SIZE]
+        allowed_ids = {message["id"] for message in batch}
+        try:
+            result = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=_build_application_discovery_prompt(batch),
+                config=genai_types.GenerateContentConfig(
+                    http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                    response_mime_type="application/json",
+                ),
+            )
+            parsed = _parse_application_discovery_response(result.text or "", allowed_ids)
+        except Exception as e:
+            current_app.logger.warning(f"Historical application discovery call failed: {e}")
+            return jsonify({"error": "Couldn't analyse those emails -- try again"}), 503
+        if parsed is None:
+            return jsonify({"error": "Couldn't analyse those emails -- try again"}), 503
+        discovered.extend(parsed)
+
+    metadata_by_id = {message["id"]: message for message in messages}
+    existing_applications = Application.query.filter_by(user_id=user.email).all()
+    added = []
+    skipped_duplicates = 0
+
+    for item in discovered:
+        metadata = metadata_by_id[item["message_id"]]
+        source_url = _gmail_message_url(
+            metadata.get("thread_id") or item["message_id"]
+        )
+        if _is_discovery_duplicate(
+            existing_applications, item["company"], item["title"], source_url
+        ):
+            skipped_duplicates += 1
+            continue
+
+        parsed_date = _parse_date(item["applied_date"])
+        fallback_date = _parse_date(metadata["received_date"]) or since
+        if parsed_date is None or parsed_date < since or parsed_date > date.today():
+            parsed_date = fallback_date
+
+        application = Application(
+            user_id=user.email,
+            title=item["title"],
+            company=item["company"],
+            url=source_url,
+            status=ApplicationStatus.APPLIED,
+            applied_date=parsed_date,
+            notes="Discovered from a Gmail application confirmation.",
+        )
+        application.set_flags([])
+        db.session.add(application)
+        db.session.flush()
+        existing_applications.append(application)
+        added.append(application)
+
+    db.session.commit()
+    return jsonify({
+        "searched": len(messages),
+        "added_applications": [application.to_dict() for application in added],
+        "skipped_duplicates": skipped_duplicates,
+        "next_page_token": next_page_token,
+    })
 
 
 @api_routes.route("/scan-emails", methods=["POST"])

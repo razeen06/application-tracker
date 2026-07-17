@@ -403,7 +403,48 @@
   .header-actions {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 14px;
+  }
+
+  .history-sync-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .history-sync-controls select { min-width: 92px; }
+
+  .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .delete-application-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+  tr.application-row:hover .delete-application-btn,
+  .delete-application-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .delete-application-btn:hover {
+    color: var(--status-rejected-dot);
+    background: var(--status-rejected-tint);
+    border-color: rgba(208,59,59,0.3);
   }
 
   .scan-status {
@@ -514,6 +555,10 @@
     thead { display: none; }
     tbody td { display: block; border-bottom: none; padding: 6px 20px; }
     tbody tr { border-bottom: 1px solid var(--border); padding: 10px 0; display: block; }
+    .header-actions { align-items: stretch; }
+    .history-sync-controls { width: 100%; }
+    .history-sync-controls .connect-btn { flex: 1; }
+    .delete-application-btn { opacity: 1; pointer-events: auto; }
   }
 
   /* ---- Settings: gear button ---- */
@@ -851,6 +896,16 @@
       <div class="card-header">
         <h2>Applications</h2>
         <div class="header-actions">
+          <span class="scan-status" id="previousSyncStatus"></span>
+          <div class="history-sync-controls">
+            <select id="previousSyncRange" aria-label="Previous application email search range">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="60">Last 60 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+            <button class="connect-btn" id="syncPreviousBtn" type="button">Sync Previous Applications</button>
+          </div>
           <span class="scan-status" id="scanStatus"></span>
           <button class="connect-btn" id="scanEmailsBtn">Update Application Status</button>
           <select id="prioritySort">
@@ -1055,6 +1110,16 @@
       }).join("");
     }
 
+    function safeApplicationUrl(url) {
+      if (!url) return null;
+      try {
+        const parsed = new URL(url, window.location.origin);
+        return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
     function renderStats() {
       const total = applications.length;
       document.getElementById("statTotal").textContent = total;
@@ -1147,21 +1212,33 @@
       emptyState.style.display = "none";
 
       tbody.innerHTML = visible.map(function (a) {
-        const link = a.url
-          ? `<a href="${a.url}" target="_blank" rel="noopener">${a.title}</a>`
-          : a.title;
-        return `<tr>
+        const safeUrl = safeApplicationUrl(a.url);
+        const safeTitle = escapeHtml(a.title);
+        const safeCompany = escapeHtml(a.company);
+        const link = safeUrl
+          ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">${safeTitle}</a>`
+          : safeTitle;
+        return `<tr class="application-row" data-id="${a.id}">
           <td class="title-cell">
             <div class="title">${link}</div>
-            <div class="company">${a.company}</div>
+            <div class="company">${safeCompany}</div>
           </td>
           <td>${badgeHtml(a.status)}</td>
           <td>${priorityBadgeHtml(a.priority_label)}</td>
           <td>${formatDate(a.applied_date)}</td>
           <td>
-            <select data-id="${a.id}" class="row-status-select">
-              ${statusOptionsHtml(a.status)}
-            </select>
+            <div class="row-actions">
+              <select data-id="${a.id}" class="row-status-select">
+                ${statusOptionsHtml(a.status)}
+              </select>
+              <button class="delete-application-btn" data-id="${a.id}" type="button" aria-label="Delete application" title="Delete application">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6l-1 14H6L5 6"></path>
+                  <path d="M10 11v6M14 11v6M9 6V4h6v2"></path>
+                </svg>
+              </button>
+            </div>
           </td>
         </tr>` + suggestionBannerRowHtml(a);
       }).join("");
@@ -1184,6 +1261,35 @@
           openSuggestionSource(parseInt(banner.dataset.id, 10));
         });
       });
+
+      tbody.querySelectorAll(".delete-application-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          deleteApplication(parseInt(btn.dataset.id, 10));
+        });
+      });
+    }
+
+    async function deleteApplication(id) {
+      const application = applications.find(function (a) { return a.id === id; });
+      if (!application) return;
+      if (!confirm(`Delete ${application.title} at ${application.company}?`)) return;
+
+      const res = await fetch(`/api/applications/${id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${apiToken}` }
+      });
+      if (!res.ok) {
+        alert("Couldn't delete that application — try again.");
+        return;
+      }
+
+      applications = applications.filter(function (a) { return a.id !== id; });
+      renderStats();
+      renderTable();
+      await loadFunnel();
+      if (document.getElementById("funnelCard").classList.contains("expanded") && window.d3) {
+        renderFunnelSankey();
+      }
     }
 
     async function updateStatus(id, newStatus) {
@@ -1325,6 +1431,83 @@
       scanEmailsBtn.title = "Connect Gmail above to scan for updates.";
     }
     scanEmailsBtn.addEventListener("click", scanEmails);
+
+    async function syncPreviousApplications() {
+      const btn = document.getElementById("syncPreviousBtn");
+      const range = document.getElementById("previousSyncRange");
+      const statusEl = document.getElementById("previousSyncStatus");
+
+      btn.disabled = true;
+      range.disabled = true;
+      statusEl.className = "scan-status";
+      statusEl.textContent = "Searching confirmation emails… this can take a minute.";
+
+      try {
+        const lookbackDays = parseInt(range.value, 10);
+        const seenPageTokens = new Set();
+        let pageToken = null;
+        let searched = 0;
+        let added = 0;
+        let skippedDuplicates = 0;
+
+        do {
+          const requestBody = { lookback_days: lookbackDays };
+          if (pageToken) requestBody.page_token = pageToken;
+
+          const res = await fetch("/api/discover-applications", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiToken}`
+            },
+            body: JSON.stringify(requestBody)
+          });
+          const result = await res.json().catch(function () { return {}; });
+          if (!res.ok) {
+            statusEl.textContent = result.error || "Previous application sync failed — try again.";
+            statusEl.className = "scan-status scan-status-error";
+            return;
+          }
+
+          searched += result.searched || 0;
+          added += (result.added_applications || []).length;
+          skippedDuplicates += result.skipped_duplicates || 0;
+          pageToken = result.next_page_token || null;
+          statusEl.textContent = `Checked ${searched} likely email${searched === 1 ? "" : "s"}…`;
+
+          // A repeated opaque Gmail token would otherwise create an endless
+          // loop if Gmail ever returned a malformed pagination response.
+          if (pageToken && seenPageTokens.has(pageToken)) pageToken = null;
+          if (pageToken) seenPageTokens.add(pageToken);
+        } while (pageToken);
+
+        const duplicateText = skippedDuplicates
+          ? ` ${skippedDuplicates} already tracked.`
+          : "";
+        statusEl.textContent = added
+          ? `Added ${added} previous application${added === 1 ? "" : "s"}.${duplicateText}`
+          : `No new previous applications found.${duplicateText}`;
+        statusEl.className = "scan-status scan-status-success";
+
+        await Promise.all([loadApplications(), loadFunnel()]);
+        if (document.getElementById("funnelCard").classList.contains("expanded") && window.d3) {
+          renderFunnelSankey();
+        }
+      } catch (err) {
+        statusEl.textContent = "Something went wrong — try again.";
+        statusEl.className = "scan-status scan-status-error";
+      } finally {
+        btn.disabled = false;
+        range.disabled = false;
+      }
+    }
+
+    const syncPreviousBtn = document.getElementById("syncPreviousBtn");
+    if (!GMAIL_CONNECTED) {
+      syncPreviousBtn.disabled = true;
+      syncPreviousBtn.title = "Connect Gmail above to sync previous applications.";
+    }
+    syncPreviousBtn.addEventListener("click", syncPreviousApplications);
 
     // ---------- Application Funnel ----------
 

@@ -1,9 +1,9 @@
-# Privacy Policy for Application Tracker & Intern Copilot
+# Privacy Policy for Application Tracker
 
 **Last updated: July 15, 2026**
 
-Application Tracker (the web dashboard) and Intern Copilot (its companion Chrome
-extension) are a personal project for tracking job/internship applications.
+Application Tracker (the web dashboard and its companion Chrome extension) is a
+personal project for tracking job/internship applications.
 This policy explains what data they collect, how it's used, and what control
 you have over it.
 

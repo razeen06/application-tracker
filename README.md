@@ -127,7 +127,7 @@ pytest tests/
 
 Most functionality degrades gracefully without every key set — `GEMINI_API_KEY` gates AI summaries/scoring/resume parsing, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` gate Google sign-in, `GMAIL_TOKEN_ENCRYPTION_KEY` gates Gmail connection, and `SENTRY_DSN` is production-only. See `.env.example` for what each variable does and where to get it.
 
-The companion Chrome extension ([Intern Copilot](https://github.com/razeen06/intern-copilot-extension)) is a separate repo; load it unpacked via `chrome://extensions` for local testing against this backend.
+The companion [Application Tracker Chrome extension](https://github.com/razeen06/application-tracker-extension) is a separate repo; load it unpacked via `chrome://extensions` for local testing against this backend.
 
 ## CI
 

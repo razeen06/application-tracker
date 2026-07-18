@@ -92,3 +92,6 @@ jobs:
       # step (non-zero exit) and fails the job.
       - name: Apply full migration chain from a fresh database
         run: flask --app app db upgrade
+
+      - name: Verify User schema and Alembic head
+        run: python scripts/verify_schema.py

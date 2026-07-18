@@ -110,7 +110,7 @@ def test_ai_suggestion_review_flow(live_server, context, page):
         banner.click()
     popup = popup_info.value
     popup.wait_for_load_state("load")
-    assert popup.url == "https://mail.google.com/mail/u/0/#inbox/msg-interview"
+    assert popup.url == "https://mail.google.com/mail/u/0/#all/msg-interview"
     popup.close()
 
     page.wait_for_function(

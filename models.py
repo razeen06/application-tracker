@@ -100,6 +100,8 @@ class Application(db.Model):
     # ignores it. One of "Interview Offered", "Action Required", "Progress",
     # "Rejected", or null if no suggestion is pending.
     ai_suggested_status = db.Column(db.String(50), nullable=True)
+    # Stores the Gmail thread ID used by the web deep link. The historical
+    # column name is retained to avoid a destructive rename migration.
     ai_suggestion_source_email_id = db.Column(db.String(255), nullable=True)
     ai_suggestion_seen = db.Column(db.Boolean, nullable=False, default=False)
     ai_suggestion_created_at = db.Column(db.DateTime, nullable=True)

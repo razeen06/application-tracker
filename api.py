@@ -25,6 +25,21 @@ MAX_EMAIL_BODY_CHARS = 2000
 MAX_RESUME_TEXT_CHARS = 8000
 GEMINI_TIMEOUT_MS = 15000
 COMPETITIVENESS_CACHE_TTL_DAYS = 30
+JOB_BOARD_COMPANY_NAMES = {"indeed", "linkedin", "seek", "seek grad"}
+JOB_BOARD_HOSTS = {
+    "indeed.com",
+    "indeed.co.uk",
+    "indeed.ca",
+    "indeed.com.au",
+    "linkedin.com",
+    "seek.com",
+    "seek.com.au",
+    "seek.co.nz",
+    "myworkdayjobs.com",
+    "greenhouse.io",
+    "lever.co",
+    "smartrecruiters.com",
+}
 APPLICATION_DISCOVERY_LOOKBACK_DAYS = {7, 30, 60, 90}
 APPLICATION_DISCOVERY_CANDIDATES_PER_PAGE = 25
 APPLICATION_DISCOVERY_BATCH_SIZE = 25
@@ -789,7 +804,7 @@ def _build_suitability_prompt(candidate_profile_text, page_text):
         "specific job posting, based on their own background.\n\n"
         f"Candidate's background:\n{candidate_profile_text}\n\n"
         f"Job posting:\n{truncated}\n\n"
-        "Respond with a JSON object containing exactly two keys:\n"
+        "Respond with a JSON object containing exactly three keys:\n"
         "\"score\": a number from 0 to 10 rating how well this candidate's "
         "background suits this specific role (0 = no meaningful overlap, "
         "10 = an excellent match). Judge honestly based on actual overlap "
@@ -797,6 +812,10 @@ def _build_suitability_prompt(candidate_profile_text, page_text):
         "genuine mismatch should score low (e.g. 1-2), not a safe middle "
         "value, and a strong match should score high (e.g. 8-10).\n"
         "\"rationale\": one sentence explaining the score.\n"
+        "\"employer_name\": the real hiring organisation named in the job "
+        "posting, not the job board or recruiting platform hosting the page "
+        "(for example, return \"Atlassian\", never \"LinkedIn\"). Return null "
+        "only if the posting does not identify the employer.\n"
     )
 
 
@@ -816,13 +835,35 @@ def _parse_suitability_response(raw_text):
 
     score = parsed.get("score")
     rationale = parsed.get("rationale")
+    employer_name = parsed.get("employer_name")
 
     if not isinstance(score, (int, float)) or isinstance(score, bool):
         return None
     if not isinstance(rationale, str) or not rationale.strip():
         return None
+    if employer_name is not None and not isinstance(employer_name, str):
+        return None
 
-    return {"score": max(0.0, min(10.0, float(score))), "rationale": rationale.strip()}
+    return {
+        "score": max(0.0, min(10.0, float(score))),
+        "rationale": rationale.strip(),
+        "employer_name": _clean_employer_name(employer_name),
+    }
+
+
+def _clean_employer_name(value):
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned or len(cleaned) > 200:
+        return None
+
+    normalized = re.sub(r"^www\.", "", cleaned.lower())
+    if normalized in JOB_BOARD_COMPANY_NAMES:
+        return None
+    if any(normalized == host or normalized.endswith(f".{host}") for host in JOB_BOARD_HOSTS):
+        return None
+    return cleaned
 
 
 @api_routes.route("/score-suitability", methods=["POST"])
@@ -871,7 +912,11 @@ def score_suitability():
         current_app.logger.warning("Gemini suitability response wasn't valid {score, rationale} JSON")
         return jsonify({"error": "Suitability score unavailable"}), 503
 
-    return jsonify({"suitability_score": parsed["score"], "suitability_rationale": parsed["rationale"]})
+    return jsonify({
+        "suitability_score": parsed["score"],
+        "suitability_rationale": parsed["rationale"],
+        "employer_name": parsed["employer_name"],
+    })
 
 
 def _build_competitiveness_prompt(company_name):
@@ -962,10 +1007,10 @@ def _fetch_competitiveness_from_gemini(client, company_name):
 @token_required
 def score_competitiveness():
     data = request.get_json(silent=True) or {}
-    company_name = (data.get("company_name") or "").strip()
+    company_name = _clean_employer_name(data.get("company_name"))
 
     if not company_name:
-        return jsonify({"error": "company_name is required"}), 400
+        return jsonify({"error": "A real employer name is required; job-board domains are not valid"}), 400
 
     stale_cutoff = datetime.utcnow() - timedelta(days=COMPETITIVENESS_CACHE_TTL_DAYS)
     existing = CompanyProfile.query.filter_by(company_name=company_name).first()
@@ -1623,7 +1668,10 @@ def scan_emails():
 
         if classification in SUGGESTION_CATEGORIES:
             matched_app.ai_suggested_status = classification
-            matched_app.ai_suggestion_source_email_id = message_id
+            # The column predates deep links and retains its old name for
+            # schema compatibility, but the Gmail web UI route needs the
+            # conversation's threadId rather than messages.list's message id.
+            matched_app.ai_suggestion_source_email_id = metadata.get("thread_id") or message_id
             matched_app.ai_suggestion_seen = False
             matched_app.ai_suggestion_created_at = datetime.utcnow()
             updated_applications_by_id[matched_app.id] = matched_app

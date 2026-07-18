@@ -178,6 +178,7 @@ def _seed(app, monkeypatch):
         "get_message_metadata",
         lambda access_token, message_id: {
             "id": message_id,
+            "thread_id": f"thread-{message_id}",
             "subject": FAKE_EMAILS[message_id]["subject"],
             "sender": FAKE_EMAILS[message_id]["sender"],
             "internal_date": FAKE_EMAILS[message_id]["internal_date"],
@@ -269,12 +270,12 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
     with app.app_context():
         acme = db.session.get(Application, ids["acme"])
         assert acme.ai_suggested_status == "Action Required"
-        assert acme.ai_suggestion_source_email_id == "msg-acme-new"
+        assert acme.ai_suggestion_source_email_id == "thread-msg-acme-new"
         assert acme.ai_suggestion_seen is False
 
         jane_street = db.session.get(Application, ids["jane_street"])
         assert jane_street.ai_suggested_status == "Interview Offered"
-        assert jane_street.ai_suggestion_source_email_id == "msg-interview"
+        assert jane_street.ai_suggestion_source_email_id == "thread-msg-interview"
 
         umbrella = db.session.get(Application, ids["umbrella"])
         assert umbrella.ai_suggested_status is None

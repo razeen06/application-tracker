@@ -109,6 +109,9 @@ def get_message_metadata(access_token, message_id):
 
     return {
         "id": message_id,
+        # Gmail's web UI opens conversations by thread ID, not by the
+        # individual message ID returned by messages.list.
+        "thread_id": data.get("threadId") or message_id,
         "subject": _extract_header(headers_list, "Subject"),
         "sender": _extract_header(headers_list, "From"),
         # Returned by Gmail regardless of the "format" param -- used to sort

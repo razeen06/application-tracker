@@ -1,10 +1,12 @@
 import json
 import secrets
-from datetime import date, datetime
+from datetime import date
 from enum import Enum
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+
+from constants import utcnow_naive
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -156,7 +158,7 @@ class AISummary(db.Model):
     # api.py's _parse_summary_response). Cached alongside summary_text so a
     # cache-hit returns the same flags that were originally decided on.
     flags_snapshot = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow_naive)
 
     def get_flags_snapshot(self):
         return json.loads(self.flags_snapshot) if self.flags_snapshot else []
@@ -186,7 +188,7 @@ class CompanyProfile(db.Model):
     # api.py's /api/score-competitiveness) so an ungrounded guess is never
     # presented as verified research.
     grounded = db.Column(db.Boolean, nullable=False, default=False)
-    fetched_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    fetched_at = db.Column(db.DateTime, nullable=False, default=utcnow_naive)
 
     def to_dict(self):
         return {
@@ -214,4 +216,4 @@ class ProcessedEmail(db.Model):
     # application -- still recorded here so the email isn't re-processed on
     # the next scan.
     application_id = db.Column(db.Integer, db.ForeignKey("applications.id"), nullable=True, index=True)
-    processed_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=False, default=utcnow_naive)

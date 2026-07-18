@@ -1,5 +1,5 @@
-from datetime import datetime
 from functools import wraps
+import os
 
 from flask import Blueprint, render_template, redirect, request, session, url_for, current_app, jsonify
 from authlib.integrations.flask_client import OAuth
@@ -8,11 +8,39 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import crypto
-from constants import GMAIL_READONLY_SCOPE, MIN_PASSWORD_LENGTH
+import schema_health
+from constants import GMAIL_READONLY_SCOPE, MIN_PASSWORD_LENGTH, utcnow_naive
 from models import db, User
 
 oauth = OAuth()
 main_routes = Blueprint("main_routes", __name__)
+
+
+@main_routes.route("/health")
+def health():
+    try:
+        schema = schema_health.inspect_user_schema(db.engine, current_app.root_path)
+    except Exception:
+        current_app.logger.exception("Production schema health check failed")
+        return jsonify({
+            "status": "degraded",
+            "revision": os.getenv("RENDER_GIT_COMMIT"),
+            "database": {"ok": False},
+            "configuration": {
+                "flask_secret_key_set": bool(os.getenv("FLASK_SECRET_KEY")),
+                "google_client_secret_set": bool(os.getenv("GOOGLE_CLIENT_SECRET")),
+            },
+        }), 503
+
+    return jsonify({
+        "status": "ok" if schema["ok"] else "degraded",
+        "revision": os.getenv("RENDER_GIT_COMMIT"),
+        "database": schema,
+        "configuration": {
+            "flask_secret_key_set": bool(os.getenv("FLASK_SECRET_KEY")),
+            "google_client_secret_set": bool(os.getenv("GOOGLE_CLIENT_SECRET")),
+        },
+    }), 200 if schema["ok"] else 503
 
 
 def login_required(view_func):
@@ -207,7 +235,7 @@ def gmail_callback():
         return redirect(url_for("main_routes.dashboard"))
 
     user.gmail_refresh_token = crypto.encrypt_token(refresh_token)
-    user.gmail_connected_at = datetime.utcnow()
+    user.gmail_connected_at = utcnow_naive()
     db.session.commit()
 
     return redirect(url_for("main_routes.dashboard"))

@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 import crypto
 import email_matching
 import gmail_client
+from constants import utcnow_naive
 from models import db, Application, ApplicationStatus, AISummary, CompanyProfile, ProcessedEmail
 from auth import token_required
 
@@ -1012,7 +1013,7 @@ def score_competitiveness():
     if not company_name:
         return jsonify({"error": "A real employer name is required; job-board domains are not valid"}), 400
 
-    stale_cutoff = datetime.utcnow() - timedelta(days=COMPETITIVENESS_CACHE_TTL_DAYS)
+    stale_cutoff = utcnow_naive() - timedelta(days=COMPETITIVENESS_CACHE_TTL_DAYS)
     existing = CompanyProfile.query.filter_by(company_name=company_name).first()
 
     if existing and existing.fetched_at >= stale_cutoff:
@@ -1035,7 +1036,7 @@ def score_competitiveness():
         existing.competitiveness_score = score
         existing.rationale = rationale
         existing.grounded = grounded
-        existing.fetched_at = datetime.utcnow()
+        existing.fetched_at = utcnow_naive()
     else:
         existing = CompanyProfile(
             company_name=company_name,
@@ -1581,7 +1582,7 @@ def scan_emails():
         return jsonify({"error": "Gmail search failed"}), 502
 
     if not message_ids:
-        user.last_email_scan_at = datetime.utcnow()
+        user.last_email_scan_at = utcnow_naive()
         db.session.commit()
         return jsonify({"scanned": 0, "updated_applications": []})
 
@@ -1673,7 +1674,7 @@ def scan_emails():
             # conversation's threadId rather than messages.list's message id.
             matched_app.ai_suggestion_source_email_id = metadata.get("thread_id") or message_id
             matched_app.ai_suggestion_seen = False
-            matched_app.ai_suggestion_created_at = datetime.utcnow()
+            matched_app.ai_suggestion_created_at = utcnow_naive()
             updated_applications_by_id[matched_app.id] = matched_app
 
         db.session.commit()
@@ -1682,7 +1683,7 @@ def scan_emails():
     # anything skipped above (transient failures) stayed out of
     # ProcessedEmail, so it's naturally retried on the next scan rather than
     # silently lost in a gap.
-    user.last_email_scan_at = datetime.utcnow()
+    user.last_email_scan_at = utcnow_naive()
     db.session.commit()
 
     return jsonify({

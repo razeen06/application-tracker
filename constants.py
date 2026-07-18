@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+
+
 GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configuration"
 
 # Requested only by /connect-gmail -- separate from the login flow's
@@ -8,3 +11,8 @@ GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
 # Email/password auth (routes.py).
 MIN_PASSWORD_LENGTH = 8
+
+
+def utcnow_naive():
+    """Current UTC time in the naive form used by existing DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)

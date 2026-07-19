@@ -20,6 +20,14 @@ class _Models:
                 "score": 8.0,
                 "rationale": "The role closely matches the candidate's Python experience.",
                 "employer_name": "Atlassian",
+                "hiring_end_date": "2027-02-17",
+            })
+        if '"score": null' in contents:
+            return _Result({
+                "score": None,
+                "rationale": None,
+                "employer_name": "Atlassian",
+                "hiring_end_date": "2027-02-17",
             })
         return _Result({
             "score": 8.5,
@@ -74,6 +82,7 @@ def test_existing_suitability_call_extracts_real_employer(live_server, monkeypat
         "suitability_score": 8.0,
         "suitability_rationale": "The role closely matches the candidate's Python experience.",
         "employer_name": "Atlassian",
+        "hiring_end_date": "2027-02-17",
     }
     assert len(fake_client.models.prompts) == 1
     assert "not the job board" in fake_client.models.prompts[0]
@@ -120,3 +129,38 @@ def test_competitiveness_scores_actual_employer(live_server, monkeypatch):
     assert payload["competitiveness_score"] == 8.5
     assert len(fake_client.models.prompts) == 1
     assert '"Atlassian"' in fake_client.models.prompts[0]
+
+
+def test_job_metadata_is_extracted_without_candidate_background(live_server, monkeypatch):
+    app, _ = live_server
+    from models import User, db
+
+    with app.app_context():
+        user = User(email="timeline-only@example.com", name="Timeline Only")
+        token = user.generate_api_token()
+        db.session.add(user)
+        db.session.commit()
+        db.session.remove()
+
+    fake_client = _Client()
+    import api
+
+    monkeypatch.setattr(api, "_get_genai_client", lambda: fake_client)
+    response = app.test_client().post(
+        "/api/score-suitability",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "page_text": (
+                "Software Engineer Intern at Atlassian. "
+                "The internship starts on 17 February 2027."
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["suitability_score"] is None
+    assert payload["suitability_rationale"] is None
+    assert payload["employer_name"] == "Atlassian"
+    assert payload["hiring_end_date"] == "2027-02-17"
+    assert "Add your background" in payload["message"]

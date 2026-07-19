@@ -24,6 +24,7 @@ FAKE_EMAILS = {
         "company": "Northstar Labs",
         "title": "Platform Engineering Intern",
         "applied_date": (date.today() - timedelta(days=5)).isoformat(),
+        "hiring_end_date": (date.today() + timedelta(days=120)).isoformat(),
     },
     "msg-existing": {
         "subject": "Application received - Acme Corp",
@@ -57,6 +58,7 @@ class _Models:
                 "company": email["company"],
                 "title": email["title"],
                 "applied_date": email["applied_date"],
+                "hiring_end_date": email.get("hiring_end_date"),
             })
         return _Result(json.dumps({"applications": applications}))
 
@@ -110,6 +112,7 @@ def test_sync_previous_applications_and_hover_delete(
             user_id=user_email,
             title="Backend Intern",
             company="Acme Corp",
+            url="https://mail.google.com/mail/u/0/#all/legacy-acme-thread",
             status=ApplicationStatus.APPLIED,
             applied_date=date.today() - timedelta(days=7),
         ))
@@ -118,6 +121,9 @@ def test_sync_previous_applications_and_hover_delete(
 
     seen_search = []
     monkeypatch.setattr(gmail_client, "refresh_access_token", lambda *args: "access-token")
+    monkeypatch.setattr(
+        gmail_client, "get_profile_email", lambda access_token: user_email
+    )
 
     def fake_search(access_token, query, max_messages=100, page_token=None):
         seen_search.append({
@@ -138,6 +144,7 @@ def test_sync_previous_applications_and_hover_delete(
         lambda access_token, message_id: {
             "id": message_id,
             "thread_id": f"thread-{message_id}",
+            "rfc_message_id": f"<{message_id}@mail.example>",
             "subject": FAKE_EMAILS[message_id]["subject"],
             "sender": FAKE_EMAILS[message_id]["sender"],
             "internal_date": timestamp_ms,
@@ -174,7 +181,22 @@ def test_sync_previous_applications_and_hover_delete(
     new_row = page.locator('.application-row:has-text("Northstar Labs")')
     assert new_row.count() == 1
     email_href = new_row.locator(".title-cell a").get_attribute("href")
-    assert email_href == "https://mail.google.com/mail/u/0/#all/thread-msg-new"
+    assert email_href == (
+        "https://mail.google.com/mail/u/?authuser=historical-sync%40example.com"
+        "#search/rfc822msgid%3Amsg-new%40mail.example/thread-msg-new"
+    )
+    assert "1 email link refreshed" in page.locator(
+        "#previousSyncStatus"
+    ).inner_text()
+
+    with app.app_context():
+        acme = Application.query.filter_by(
+            user_id=user_email, company="Acme Corp"
+        ).one()
+        assert acme.url == (
+            "https://mail.google.com/mail/u/?authuser=historical-sync%40example.com"
+            "#search/rfc822msgid%3Amsg-existing%40mail.example/thread-msg-existing"
+        )
 
     # An application can already be referenced by the status-scan history.
     # Deletion must preserve that history while releasing its foreign key.
@@ -183,6 +205,7 @@ def test_sync_previous_applications_and_hover_delete(
         northstar = Application.query.filter_by(
             user_id=user_email, company="Northstar Labs"
         ).one()
+        assert northstar.hiring_end_date == date.today() + timedelta(days=120)
         db.session.add(ProcessedEmail(
             user_id=user.id,
             gmail_message_id="msg-status-update",
@@ -274,6 +297,9 @@ def test_recall_search_adds_progressed_applications_and_filters_unsubmitted(
     seen_queries = []
     seen_prompts = []
     monkeypatch.setattr(gmail_client, "refresh_access_token", lambda *args: "access-token")
+    monkeypatch.setattr(
+        gmail_client, "get_profile_email", lambda access_token: user_email
+    )
 
     def fake_search(access_token, query, max_messages=100, page_token=None):
         seen_queries.append(query)
@@ -288,6 +314,7 @@ def test_recall_search_adds_progressed_applications_and_filters_unsubmitted(
         lambda access_token, message_id: {
             "id": message_id,
             "thread_id": f"thread-{message_id}",
+            "rfc_message_id": f"<{message_id}@mail.example>",
             "subject": candidate_emails[message_id]["subject"],
             "sender": candidate_emails[message_id]["sender"],
             "internal_date": timestamp_ms,

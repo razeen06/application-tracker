@@ -3,6 +3,7 @@ import json
 import os
 import re
 from datetime import datetime, date, timedelta, timezone
+from urllib.parse import quote
 
 import docx
 from flask import Blueprint, request, jsonify, g, current_app
@@ -88,15 +89,13 @@ APPLICATION_DISCOVERY_COMPANY_SUFFIXES = {
 RESUME_ALLOWED_EXTENSIONS = {"pdf", "docx"}
 MAX_RESUME_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
-# Application Funnel: how many days an application can sit at "Applied" with
-# no further movement before the funnel counts it as "Ghosted" rather than
-# "Awaiting Response". This is a display-time bucket only (see
-# _compute_application_funnel) -- never written back to Application.status,
-# since a company can still respond after this threshold and an application
-# shouldn't be permanently mislabeled just because it crossed a date line.
-GHOSTED_THRESHOLD_DAYS = 21
-
-SUGGESTION_CATEGORIES = {"Interview Offered", "Action Required", "Progress", "Rejected"}
+# "Closed" is distinct from "Rejected": it means the role was filled, the
+# hiring process ended, or a reliably known role-start/hiring-end date passed
+# without a response. It must not imply that the employer explicitly rejected
+# this candidate.
+SUGGESTION_CATEGORIES = {
+    "Interview Offered", "Action Required", "Progress", "Rejected", "Closed"
+}
 VALID_CLASSIFICATIONS = SUGGESTION_CATEGORIES | {"Not Relevant"}
 
 # Maps an ai_suggested_status category onto the real ApplicationStatus it
@@ -109,6 +108,7 @@ SUGGESTION_STATUS_MAP = {
     "Action Required": ApplicationStatus.ACTION_REQUIRED,
     "Progress": ApplicationStatus.PROGRESS,
     "Rejected": ApplicationStatus.REJECTED,
+    "Closed": ApplicationStatus.CLOSED,
 }
 
 _genai_client = None
@@ -135,7 +135,7 @@ def _parse_date(value):
         return None
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -179,6 +179,7 @@ def create_application():
         url=data.get("url"),
         status=status,
         applied_date=_parse_date(data.get("applied_date")) or date.today(),
+        hiring_end_date=_parse_date(data.get("hiring_end_date")),
         notes=data.get("notes", ""),
         suitability_score=suitability_score,
         competitiveness_score=competitiveness_score,
@@ -232,6 +233,15 @@ def update_application(application_id):
         parsed = _parse_date(data["applied_date"])
         if parsed:
             application.applied_date = parsed
+    if "hiring_end_date" in data:
+        value = data["hiring_end_date"]
+        parsed = _parse_date(value)
+        if value in (None, ""):
+            application.hiring_end_date = None
+        elif parsed:
+            application.hiring_end_date = parsed
+        else:
+            return jsonify({"error": "hiring_end_date must be YYYY-MM-DD or null"}), 400
 
     # Scores can arrive after the application was already tracked (e.g. the
     # popup's two Gemini calls settle at different times) -- accepting them
@@ -334,14 +344,12 @@ def erase_all_applications():
 # frontend), doesn't affect the counts.
 FUNNEL_STAGE_ORDER = [
     "Offer", "Interview", "Progress", "Action Required",
-    "Awaiting Response", "Rejected", "Ghosted",
+    "Ghosted / Awaiting Response", "Rejected", "Closed",
 ]
 
 
 def _compute_application_funnel(user_email):
     # Pure SQL/ORM aggregation -- no AI involved, this is just counting.
-    ghosted_cutoff = date.today() - timedelta(days=GHOSTED_THRESHOLD_DAYS)
-
     non_applied_counts = dict(
         db.session.query(Application.status, func.count(Application.id))
         .filter(Application.user_id == user_email, Application.status != ApplicationStatus.APPLIED)
@@ -349,25 +357,23 @@ def _compute_application_funnel(user_email):
         .all()
     )
 
-    # "Ghosted" is a derived/virtual bucket, computed fresh on every call --
-    # never stored on the row -- specifically because a company can still
-    # respond after crossing this date line, so a stored label would risk
-    # staying wrong after the fact.
-    ghosted_count = Application.query.filter(
+    # A passed hiring_end_date is a derived Closed outcome only while the row
+    # is still unresolved (Applied). It is never written back to status: the
+    # source date may be corrected later and the user can still record an
+    # actual employer response independently.
+    derived_closed_count = Application.query.filter(
         Application.user_id == user_email,
         Application.status == ApplicationStatus.APPLIED,
-        Application.applied_date.isnot(None),
-        Application.applied_date <= ghosted_cutoff,
+        Application.ai_suggested_status.is_(None),
+        Application.hiring_end_date.isnot(None),
+        Application.hiring_end_date < date.today(),
     ).count()
 
     still_applied_count = Application.query.filter(
         Application.user_id == user_email,
         Application.status == ApplicationStatus.APPLIED,
     ).count()
-    # Applications with no applied_date at all can't have their age judged,
-    # so they fall into "Awaiting Response" alongside ones too recent to be
-    # ghosted, rather than being silently dropped from the funnel.
-    awaiting_count = still_applied_count - ghosted_count
+    unresolved_count = still_applied_count - derived_closed_count
 
     stage_counts = {
         "Interview": non_applied_counts.get(ApplicationStatus.INTERVIEW, 0),
@@ -375,8 +381,11 @@ def _compute_application_funnel(user_email):
         "Progress": non_applied_counts.get(ApplicationStatus.PROGRESS, 0),
         "Offer": non_applied_counts.get(ApplicationStatus.OFFER, 0),
         "Rejected": non_applied_counts.get(ApplicationStatus.REJECTED, 0),
-        "Ghosted": ghosted_count,
-        "Awaiting Response": awaiting_count,
+        "Closed": (
+            non_applied_counts.get(ApplicationStatus.CLOSED, 0)
+            + derived_closed_count
+        ),
+        "Ghosted / Awaiting Response": unresolved_count,
     }
 
     flows = [
@@ -388,7 +397,9 @@ def _compute_application_funnel(user_email):
     total = sum(stage_counts.values())
     responded = (
         stage_counts["Interview"] + stage_counts["Action Required"]
-        + stage_counts["Progress"] + stage_counts["Offer"] + stage_counts["Rejected"]
+        + stage_counts["Progress"] + stage_counts["Offer"]
+        + stage_counts["Rejected"]
+        + non_applied_counts.get(ApplicationStatus.CLOSED, 0)
     )
 
     return {
@@ -398,8 +409,8 @@ def _compute_application_funnel(user_email):
         "summary": {
             "total": total,
             "responded": responded,
-            "ghosted": stage_counts["Ghosted"],
-            "awaiting_response": stage_counts["Awaiting Response"],
+            "ghosted_or_awaiting_response": stage_counts["Ghosted / Awaiting Response"],
+            "closed": stage_counts["Closed"],
         },
     }
 
@@ -800,23 +811,43 @@ def _build_candidate_profile_text(resume_structured, background_text):
 
 def _build_suitability_prompt(candidate_profile_text, page_text):
     truncated = page_text[:MAX_PAGE_TEXT_CHARS]
+    if candidate_profile_text:
+        score_instruction = (
+            '"score": a number from 0 to 10 rating how well this candidate\'s '
+            "background suits this specific role (0 = no meaningful overlap, "
+            "10 = an excellent match). Judge honestly based on actual overlap "
+            "between their background and the role's actual requirements -- a "
+            "genuine mismatch should score low (e.g. 1-2), not a safe middle "
+            "value, and a strong match should score high (e.g. 8-10).\n"
+            '"rationale": one sentence explaining the score.\n'
+        )
+        candidate_block = f"Candidate's background:\n{candidate_profile_text}\n\n"
+    else:
+        score_instruction = (
+            '"score": null.\n'
+            '"rationale": null.\n'
+        )
+        candidate_block = ""
+
     return (
         "You are helping a job seeker judge how well they personally suit a "
         "specific job posting, based on their own background.\n\n"
-        f"Candidate's background:\n{candidate_profile_text}\n\n"
+        f"{candidate_block}"
         f"Job posting:\n{truncated}\n\n"
-        "Respond with a JSON object containing exactly three keys:\n"
-        "\"score\": a number from 0 to 10 rating how well this candidate's "
-        "background suits this specific role (0 = no meaningful overlap, "
-        "10 = an excellent match). Judge honestly based on actual overlap "
-        "between their background and the role's actual requirements -- a "
-        "genuine mismatch should score low (e.g. 1-2), not a safe middle "
-        "value, and a strong match should score high (e.g. 8-10).\n"
-        "\"rationale\": one sentence explaining the score.\n"
+        "Respond with a JSON object containing exactly four keys:\n"
+        f"{score_instruction}"
         "\"employer_name\": the real hiring organisation named in the job "
         "posting, not the job board or recruiting platform hosting the page "
         "(for example, return \"Atlassian\", never \"LinkedIn\"). Return null "
         "only if the posting does not identify the employer.\n"
+        "\"hiring_end_date\": the explicit role/program start date, or an "
+        "explicit date when the hiring/recruitment period itself ends, as "
+        "YYYY-MM-DD. This is the date after which an unresolved candidate "
+        "clearly has no remaining chance. Do NOT use the application closing "
+        "or submission deadline: an already-submitted application can remain "
+        "under review after applications close. Do not guess missing day, "
+        "month, or year components; return null unless the posting provides a "
+        "complete reliable date.\n"
     )
 
 
@@ -837,18 +868,27 @@ def _parse_suitability_response(raw_text):
     score = parsed.get("score")
     rationale = parsed.get("rationale")
     employer_name = parsed.get("employer_name")
+    hiring_end_date = parsed.get("hiring_end_date")
 
-    if not isinstance(score, (int, float)) or isinstance(score, bool):
-        return None
-    if not isinstance(rationale, str) or not rationale.strip():
-        return None
+    if score is None:
+        if rationale is not None:
+            return None
+    else:
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            return None
+        if not isinstance(rationale, str) or not rationale.strip():
+            return None
     if employer_name is not None and not isinstance(employer_name, str):
         return None
+    if hiring_end_date is not None:
+        if not isinstance(hiring_end_date, str) or _parse_date(hiring_end_date) is None:
+            return None
 
     return {
-        "score": max(0.0, min(10.0, float(score))),
-        "rationale": rationale.strip(),
+        "score": max(0.0, min(10.0, float(score))) if score is not None else None,
+        "rationale": rationale.strip() if rationale is not None else None,
         "employer_name": _clean_employer_name(employer_name),
+        "hiring_end_date": hiring_end_date,
     }
 
 
@@ -878,19 +918,20 @@ def score_suitability():
 
     resume_structured = g.current_user.get_resume_structured()
     background_text = g.current_user.background_text
-    if not resume_structured and not background_text:
-        # Not a hard error -- this is an expected, common state (most users
-        # haven't filled in Settings yet). No score to guess at without one.
-        return jsonify({
-            "suitability_score": None,
-            "suitability_rationale": None,
-            "message": "Add your background or upload a resume in Settings for a suitability score",
-        })
-
     candidate_profile_text = _build_candidate_profile_text(resume_structured, background_text)
 
     client = _get_genai_client()
     if client is None:
+        if not candidate_profile_text:
+            # Preserve the expected no-background response when Gemini itself
+            # is unavailable; only the optional metadata extraction is lost.
+            return jsonify({
+                "suitability_score": None,
+                "suitability_rationale": None,
+                "employer_name": None,
+                "hiring_end_date": None,
+                "message": "Add your background or upload a resume in Settings for a suitability score",
+            })
         current_app.logger.warning("Gemini suitability scoring skipped: GEMINI_API_KEY not configured")
         return jsonify({"error": "Suitability score unavailable"}), 503
 
@@ -913,11 +954,23 @@ def score_suitability():
         current_app.logger.warning("Gemini suitability response wasn't valid {score, rationale} JSON")
         return jsonify({"error": "Suitability score unavailable"}), 503
 
-    return jsonify({
+    # Metadata extraction still runs without a candidate profile, but a model
+    # response must never invent a personal suitability score in that state.
+    if not candidate_profile_text:
+        parsed["score"] = None
+        parsed["rationale"] = None
+
+    response_payload = {
         "suitability_score": parsed["score"],
         "suitability_rationale": parsed["rationale"],
         "employer_name": parsed["employer_name"],
-    })
+        "hiring_end_date": parsed["hiring_end_date"],
+    }
+    if not candidate_profile_text:
+        response_payload["message"] = (
+            "Add your background or upload a resume in Settings for a suitability score"
+        )
+    return jsonify(response_payload)
 
 
 def _build_competitiveness_prompt(company_name):
@@ -1066,10 +1119,11 @@ def score_competitiveness():
 # the applications they've tracked at a comparable competitiveness level
 # (+/- COMPETITIVENESS_BUCKET_RADIUS), what fraction ever moved past
 # "Applied"? This is a response rate (did the company engage at all), not an
-# advancement rate -- Interview, Action Required, Progress, Offer, and
-# Rejected all count as "responded", since all five mean the company did
-# something with the application; only "Applied" with no further movement
-# counts as no response yet.
+# advancement rate -- Interview, Action Required, Progress, Offer, Rejected,
+# and an explicitly stored Closed all count as "responded", since each means
+# the company supplied a signal; only "Applied" with no further movement
+# counts as no response yet. A date-derived funnel-only Closed remains stored
+# as Applied, so it correctly stays on the no-response side here.
 COMPETITIVENESS_BUCKET_RADIUS = 2.0
 MIN_HISTORICAL_BUCKET_SIZE = 3
 
@@ -1174,7 +1228,7 @@ def _build_classification_prompt(subject, body):
     truncated = body[:MAX_EMAIL_BODY_CHARS]
     return (
         "You are helping a job seeker track their internship/job applications. "
-        "Read this email and classify it into EXACTLY ONE of these five "
+        "Read this email and classify it into EXACTLY ONE of these six "
         "categories, based on what it means for the specific application it "
         "was matched to (the match was done by a separate, loose subject-line "
         "heuristic, so double check the body actually is about this "
@@ -1185,13 +1239,21 @@ def _build_classification_prompt(subject, body):
         "form, provide documents, confirm details) that isn't an interview invite.\n"
         "- \"Progress\": a positive status update (e.g. application received/"
         "under review, moved to the next round) with no concrete next action yet.\n"
-        "- \"Rejected\": states the candidate was not selected, or the role was "
-        "filled/closed.\n"
+        "- \"Rejected\": explicitly states the candidate was not selected or "
+        "the employer is proceeding with other candidates.\n"
+        "- \"Closed\": states the role was filled/cancelled/closed, the hiring "
+        "process ended, or a stated role start/hiring-end date has passed, "
+        "without explicitly rejecting this candidate.\n"
         "- \"Not Relevant\": not actually about this specific job application "
         "(a newsletter, an unrelated email that happens to mention the company "
         "or role in passing, a promotional email, etc.).\n\n"
-        "Respond with a JSON object containing exactly one key, "
-        "\"classification\", whose value is one of the five exact strings above.\n\n"
+        f"Today's date is {date.today().isoformat()}.\n\n"
+        "Respond with a JSON object containing exactly two keys:\n"
+        "- \"classification\": one of the six exact strings above.\n"
+        "- \"hiring_end_date\": the explicit role/program start date, or an "
+        "explicit date when the hiring/recruitment period itself ends, as "
+        "YYYY-MM-DD. Never use an application closing/submission deadline. "
+        "Return null unless every date component is reliable.\n\n"
         f"Email subject: {subject}\n\n"
         f"Email body:\n{truncated}"
     )
@@ -1209,7 +1271,16 @@ def _parse_classification_response(raw_text):
         return None
 
     if isinstance(parsed, dict) and parsed.get("classification") in VALID_CLASSIFICATIONS:
-        return parsed["classification"]
+        hiring_end_date = parsed.get("hiring_end_date")
+        if hiring_end_date is not None and (
+            not isinstance(hiring_end_date, str)
+            or _parse_date(hiring_end_date) is None
+        ):
+            hiring_end_date = None
+        return {
+            "classification": parsed["classification"],
+            "hiring_end_date": hiring_end_date,
+        }
 
     return None
 
@@ -1244,12 +1315,16 @@ def _build_application_discovery_prompt(messages):
         "proof that it was submitted.\n\n"
         "Respond with a JSON object containing exactly one key, "
         '"applications". Its value must be an array containing only confirmed '
-        "applications. Each item must contain exactly these string keys:\n"
+        "applications. Each item must contain exactly these keys:\n"
         '- "message_id": copy the supplied Message ID exactly.\n'
         '- "company": the employer or organisation.\n'
         '- "title": the role/program title.\n'
         '- "applied_date": YYYY-MM-DD, using the explicit submission date if '
         "stated, otherwise the supplied received date.\n\n"
+        '- "hiring_end_date": the explicit role/program start date, or an '
+        "explicit date when the hiring/recruitment period itself ends, as "
+        "YYYY-MM-DD. Never use an application closing/submission deadline. "
+        "Return null unless every date component is reliable.\n\n"
         "If several emails refer to the same application, return only the "
         "clearest one, preferring a direct confirmation over a reminder. Be "
         "conservative: if an email is ambiguous, leave it out. Never invent a "
@@ -1282,6 +1357,7 @@ def _parse_application_discovery_response(raw_text, allowed_message_ids):
         company = item.get("company")
         title = item.get("title")
         applied_date = item.get("applied_date")
+        hiring_end_date = item.get("hiring_end_date")
         if (
             not isinstance(message_id, str)
             or message_id not in allowed_message_ids
@@ -1293,12 +1369,18 @@ def _parse_application_discovery_response(raw_text, allowed_message_ids):
             or not isinstance(applied_date, str)
         ):
             continue
+        if hiring_end_date is not None and (
+            not isinstance(hiring_end_date, str)
+            or _parse_date(hiring_end_date) is None
+        ):
+            hiring_end_date = None
         seen_message_ids.add(message_id)
         validated.append({
             "message_id": message_id,
             "company": company.strip()[:200],
             "title": title.strip()[:200],
             "applied_date": applied_date,
+            "hiring_end_date": hiring_end_date,
         })
     return validated
 
@@ -1329,7 +1411,7 @@ def _discovery_title_years(value):
     return set(re.findall(r"\b(?:19|20)\d{2}\b", _discovery_normalize(value)))
 
 
-def _is_discovery_duplicate(existing_applications, company, title, source_url):
+def _find_discovery_duplicate(existing_applications, company, title, source_url):
     company_key = _discovery_company_key(company)
     title_key = _discovery_normalize(title)
     title_tokens = _discovery_title_tokens(title)
@@ -1337,13 +1419,13 @@ def _is_discovery_duplicate(existing_applications, company, title, source_url):
 
     for application in existing_applications:
         if application.url == source_url:
-            return True
+            return application
         existing_company = _discovery_company_key(application.company)
         existing_title = _discovery_normalize(application.title)
         if existing_company != company_key:
             continue
         if existing_title == title_key:
-            return True
+            return application
         # Confirmation emails often shorten a title slightly ("Software
         # Engineer Intern" vs "Software Engineering Internship"). Only use
         # containment for reasonably descriptive titles to avoid treating
@@ -1351,7 +1433,7 @@ def _is_discovery_duplicate(existing_applications, company, title, source_url):
         if min(len(existing_title), len(title_key)) >= 8 and (
             existing_title in title_key or title_key in existing_title
         ):
-            return True
+            return application
         # Assessment reminders commonly vary only by a year or by wording
         # such as "Internship Programme" vs "Intern Program". Token aliases
         # and a high overlap threshold catch those without collapsing two
@@ -1366,13 +1448,50 @@ def _is_discovery_duplicate(existing_applications, company, title, source_url):
                 len(existing_tokens), len(title_tokens)
             )
             if overlap >= 0.8:
-                return True
-    return False
+                return application
+    return None
 
 
-def _gmail_message_url(thread_id):
-    # #all works for inbox, archived, and labelled messages alike.
-    return f"https://mail.google.com/mail/u/0/#all/{thread_id}"
+def _is_discovery_duplicate(existing_applications, company, title, source_url):
+    return _find_discovery_duplicate(
+        existing_applications, company, title, source_url
+    ) is not None
+
+
+def _gmail_message_url(account_email, message_id, thread_id, rfc_message_id=None):
+    """Build a mailbox-aware link to the exact source message.
+
+    Gmail's API message/thread IDs are API resource identifiers, while the
+    supported rfc822msgid search operator targets an individual email by its
+    Message-ID header. The thread route remains a fallback for unusual emails
+    that do not contain that header.
+    """
+    account = quote((account_email or "").strip(), safe="")
+    normalized_rfc_id = (rfc_message_id or "").strip().strip("<>").strip()
+    if normalized_rfc_id:
+        query = quote(f"rfc822msgid:{normalized_rfc_id}", safe="")
+        conversation_id = quote((thread_id or message_id or "").strip(), safe="")
+        return (
+            "https://mail.google.com/mail/u/"
+            f"?authuser={account}#search/{query}/{conversation_id}"
+        )
+
+    # The exact-message search requires the RFC Message-ID header. Keep a
+    # mailbox-aware conversation fallback so older or malformed mail still
+    # opens in the correct Gmail account instead of assuming browser slot 0.
+    conversation_id = quote((thread_id or message_id or "").strip(), safe="")
+    return (
+        "https://mail.google.com/mail/u/"
+        f"?authuser={account}#all/{conversation_id}"
+    )
+
+
+def _is_legacy_gmail_message_url(value):
+    return (
+        isinstance(value, str)
+        and value.startswith("https://mail.google.com/mail/")
+        and "rfc822msgid%3A" not in value
+    )
 
 
 def _refresh_gmail_access_token(user):
@@ -1416,6 +1535,17 @@ def discover_applications():
     access_token, error_response = _refresh_gmail_access_token(user)
     if error_response:
         return error_response
+
+    try:
+        gmail_account_email = gmail_client.get_profile_email(access_token)
+    except gmail_client.GmailScanError as e:
+        # The account email only selects the correct signed-in Gmail profile
+        # for a deep link. Discovery can still proceed with the app account as
+        # a sensible fallback if this cheap profile request is unavailable.
+        current_app.logger.warning(
+            f"Gmail profile lookup failed for user {user.email}: {e}"
+        )
+        gmail_account_email = user.email
 
     since = date.today() - timedelta(days=lookback_days)
     query = f"after:{since.strftime('%Y/%m/%d')} {APPLICATION_DISCOVERY_GMAIL_QUERY}"
@@ -1495,15 +1625,32 @@ def discover_applications():
     existing_applications = Application.query.filter_by(user_id=user.email).all()
     added = []
     skipped_duplicates = 0
+    refreshed_email_links = 0
 
     for item in discovered:
         metadata = metadata_by_id[item["message_id"]]
         source_url = _gmail_message_url(
-            metadata.get("thread_id") or item["message_id"]
+            gmail_account_email,
+            item["message_id"],
+            metadata.get("thread_id") or item["message_id"],
+            metadata.get("rfc_message_id"),
         )
-        if _is_discovery_duplicate(
+        duplicate = _find_discovery_duplicate(
             existing_applications, item["company"], item["title"], source_url
-        ):
+        )
+        if duplicate:
+            # Upgrade links created by older versions of historical sync when
+            # the user scans the same date range again. Do not replace a real
+            # job-posting URL on a manually/extension-tracked application.
+            if (
+                _is_legacy_gmail_message_url(duplicate.url)
+                and duplicate.url != source_url
+            ):
+                duplicate.url = source_url
+                refreshed_email_links += 1
+            parsed_hiring_end_date = _parse_date(item.get("hiring_end_date"))
+            if duplicate.hiring_end_date is None and parsed_hiring_end_date:
+                duplicate.hiring_end_date = parsed_hiring_end_date
             skipped_duplicates += 1
             continue
 
@@ -1519,6 +1666,7 @@ def discover_applications():
             url=source_url,
             status=ApplicationStatus.APPLIED,
             applied_date=parsed_date,
+            hiring_end_date=_parse_date(item.get("hiring_end_date")),
             notes="Discovered from a Gmail application or recruitment-progression email.",
         )
         application.set_flags([])
@@ -1532,6 +1680,7 @@ def discover_applications():
         "searched": len(messages),
         "added_applications": [application.to_dict() for application in added],
         "skipped_duplicates": skipped_duplicates,
+        "refreshed_email_links": refreshed_email_links,
         "filtered_out": filtered_out,
         "fetch_failures": fetch_failures,
         "next_page_token": next_page_token,
@@ -1658,12 +1807,22 @@ def scan_emails():
             current_app.logger.warning(f"Gemini classification failed for message {message_id}: {e}")
             continue  # left unprocessed -- retried on the next scan
 
-        classification = _parse_classification_response(raw_text)
-        if classification is None:
+        parsed_classification = _parse_classification_response(raw_text)
+        if parsed_classification is None:
             current_app.logger.warning(
                 f"Gemini classification for message {message_id} wasn't a valid label -- treating as Not Relevant"
             )
-            classification = "Not Relevant"
+            parsed_classification = {
+                "classification": "Not Relevant",
+                "hiring_end_date": None,
+            }
+
+        classification = parsed_classification["classification"]
+        parsed_hiring_end_date = _parse_date(
+            parsed_classification.get("hiring_end_date")
+        )
+        if matched_app.hiring_end_date is None and parsed_hiring_end_date:
+            matched_app.hiring_end_date = parsed_hiring_end_date
 
         db.session.add(ProcessedEmail(user_id=user.id, gmail_message_id=message_id, application_id=matched_app.id))
 

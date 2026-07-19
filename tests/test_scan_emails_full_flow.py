@@ -72,6 +72,14 @@ FAKE_EMAILS = {
         "body": "Catch up on what Jane Street alumni have been up to this quarter.",
         "classification": "Not Relevant",
     },
+    "msg-umbrella-closed": {
+        "subject": "Umbrella Corp Growth Intern role update",
+        "sender": "careers@umbrella.example",
+        "internal_date": _BASE_TS + 6500,
+        "body": "This role has now been filled and the hiring process is closed.",
+        "classification": "Closed",
+        "hiring_end_date": (date.today() - timedelta(days=1)).isoformat(),
+    },
     "msg-spotify": {
         "subject": "Your Spotify Wrapped is here!",
         "sender": "no-reply@spotify.com",
@@ -106,7 +114,10 @@ class _FakeGenAIModels:
                     raise AssertionError(
                         f"Gemini should never be called for unmatched email {message_id!r}"
                     )
-                return _FakeGenAIResult(json.dumps({"classification": email["classification"]}))
+                return _FakeGenAIResult(json.dumps({
+                    "classification": email["classification"],
+                    "hiring_end_date": email.get("hiring_end_date"),
+                }))
         raise AssertionError(f"No fake email matches this classification prompt: {contents[:200]}")
 
 
@@ -155,6 +166,7 @@ def _seed(app, monkeypatch):
         globex = make("SRE Intern", "Globex", 5)
         initech = make("Data Intern", "Initech", 3)
         umbrella = make("Growth Intern", "Umbrella Corp", 1)  # no matching email at all
+        soylent = make("Operations Intern", "Soylent", 1)  # no matching email at all
 
         db.session.commit()
 
@@ -164,6 +176,7 @@ def _seed(app, monkeypatch):
             "globex": globex.id,
             "initech": initech.id,
             "umbrella": umbrella.id,
+            "soylent": soylent.id,
         }
         user_email, user_name = user.email, user.name
         db.session.remove()
@@ -205,7 +218,7 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
     # ---- Before: no suggestions anywhere yet. ----
     assert page.locator(".suggestion-row").count() == 0
     companies_before = page.locator(".title-cell .company").all_text_contents()
-    assert companies_before == ["Umbrella Corp", "Initech", "Globex", "Acme Corp", "Jane Street"]
+    assert companies_before == ["Soylent", "Umbrella Corp", "Initech", "Globex", "Acme Corp", "Jane Street"]
 
     console_errors = []
     page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
@@ -220,11 +233,11 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
         }"""
     )
     scan_status_text = page.locator("#scanStatus").inner_text()
-    assert scan_status_text == "Found 4 updates.", scan_status_text
+    assert scan_status_text == "Found 5 updates.", scan_status_text
     assert not page.locator("#scanEmailsBtn").is_disabled()
     assert console_errors == [], f"Browser-side errors during scan: {console_errors}"
 
-    # Gemini must have been called exactly for the 6 matched emails, never
+    # Gemini must have been called exactly for the matched emails, never
     # for the 2 that don't match anything.
     assert sorted(fake_client.models.seen_subjects) == sorted(
         email["subject"] for email in FAKE_EMAILS.values() if email["classification"] is not None
@@ -232,32 +245,33 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
 
     # ---- After: dashboard state a real user would see. ----
     # Sort order: active suggestions first by fixed category priority
-    # (Interview Offered > Action Required > Progress > Rejected), then the
-    # one unsuggested application (Umbrella Corp) last.
+    # (Interview Offered > Action Required > Progress > Rejected > Closed),
+    # then the one unsuggested application (Soylent) last.
     companies_after = page.locator(".title-cell .company").all_text_contents()
-    assert companies_after == ["Jane Street", "Acme Corp", "Globex", "Initech", "Umbrella Corp"]
+    assert companies_after == ["Jane Street", "Acme Corp", "Globex", "Initech", "Umbrella Corp", "Soylent"]
 
     # Exactly one banner per application -- specifically proves the two
     # competing Acme Corp emails didn't produce two banners or leave the
     # stale "Progress" classification behind.
-    assert page.locator(".suggestion-row").count() == 4
+    assert page.locator(".suggestion-row").count() == 5
     assert page.locator(f'tr.suggestion-row[data-id="{ids["acme"]}"]').count() == 1
 
     # All four are freshly created by this scan -- unseen, red marker showing.
-    for key in ("jane_street", "acme", "globex", "initech"):
+    for key in ("jane_street", "acme", "globex", "initech", "umbrella"):
         classes = page.locator(f'tr.suggestion-row[data-id="{ids[key]}"]').get_attribute("class")
         assert "unseen" in classes.split(), f"{key} should show the unseen marker, got class={classes!r}"
 
-    # No banner at all for Umbrella Corp (never matched) or for the
+    # No banner at all for Soylent (never matched) or for the
     # newsletter's effect on Jane Street (matched but "Not Relevant" must
     # not have clobbered the real "Interview Offered" suggestion).
-    assert page.locator(f'tr.suggestion-row[data-id="{ids["umbrella"]}"]').count() == 0
+    assert page.locator(f'tr.suggestion-row[data-id="{ids["soylent"]}"]').count() == 0
 
     expected_banner_text = {
         "jane_street": "Interview Offered",
         "acme": "Action Required",
         "globex": "Progress",
         "initech": "Rejected",
+        "umbrella": "Closed",
     }
     for key, expected_category in expected_banner_text.items():
         banner_text = page.locator(f'.suggestion-banner[data-id="{ids[key]}"]').inner_text()
@@ -278,9 +292,13 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
         assert jane_street.ai_suggestion_source_email_id == "thread-msg-interview"
 
         umbrella = db.session.get(Application, ids["umbrella"])
-        assert umbrella.ai_suggested_status is None
+        assert umbrella.ai_suggested_status == "Closed"
+        assert umbrella.hiring_end_date == date.today() - timedelta(days=1)
 
-        # All 8 emails recorded exactly once each -- matched or not.
+        soylent = db.session.get(Application, ids["soylent"])
+        assert soylent.ai_suggested_status is None
+
+        # Every email recorded exactly once -- matched or not.
         processed_count = ProcessedEmail.query.filter_by(user_id=User.query.filter_by(email=user_email).first().id).count()
         assert processed_count == len(FAKE_EMAILS)
 
@@ -302,7 +320,7 @@ def test_scan_emails_full_flow(live_server, context, page, monkeypatch):
         }"""
     )
     assert fake_client.models.seen_subjects == [], "second scan must not re-call Gemini for already-processed emails"
-    assert page.locator(".suggestion-row").count() == 4  # unchanged, no duplicates
+    assert page.locator(".suggestion-row").count() == 5  # unchanged, no duplicates
 
     with app.app_context():
         processed_count = ProcessedEmail.query.filter_by(user_id=User.query.filter_by(email=user_email).first().id).count()

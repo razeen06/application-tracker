@@ -30,12 +30,12 @@
     --status-progress-tint: rgba(59,130,246,0.14);
     --status-action-required-dot: #f59e0b;
     --status-action-required-tint: rgba(245,158,11,0.14);
-    /* "Ghosted" isn't a real ApplicationStatus -- it's the funnel's derived
-       bucket for a stale "Applied" (see api.py's GHOSTED_THRESHOLD_DAYS). A
-       muted violet-grey reads as "faded away" without borrowing rejected's
-       red (a company ghosting isn't the same as an explicit no). */
+    /* Combined unresolved funnel bucket. A muted violet-grey reads as
+       "waiting/faded" without borrowing rejected's explicit-negative red. */
     --status-ghosted-dot: #8b7cb8;
     --status-ghosted-tint: rgba(139,124,184,0.16);
+    --status-closed-dot: #64748b;
+    --status-closed-tint: rgba(100,116,139,0.16);
     --suggestion-marker: #f87171;
     --wash-subtle: rgba(255,255,255,0.03);
     --radius-lg: 16px;
@@ -269,6 +269,7 @@
 
   .title-cell .title { font-weight: 500; }
   .title-cell .company { color: var(--text-secondary); font-size: 13px; margin-top: 3px; }
+  .title-cell .timeline-note { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
   .title-cell a { color: inherit; text-decoration: none; }
   .title-cell a:hover { color: var(--accent); }
 
@@ -921,6 +922,7 @@
             <option value="Interview">Interview</option>
             <option value="Offer">Offer</option>
             <option value="Rejected">Rejected</option>
+            <option value="Closed">Closed</option>
           </select>
         </div>
       </div>
@@ -1004,7 +1006,7 @@
           </div>
           <div class="how-to-use-item">
             <h3>Review AI suggestions</h3>
-            <p>A matched email becomes a suggestion banner under that application, classified as Interview Offered, Action Required, Progress, or Rejected. Nothing is applied automatically.</p>
+            <p>A matched email becomes a suggestion banner under that application, classified as Interview Offered, Action Required, Progress, Rejected, or Closed. Nothing is applied automatically.</p>
           </div>
           <div class="how-to-use-item">
             <h3>Clear a suggestion</h3>
@@ -1041,9 +1043,10 @@
       "Action Required": { dot: "var(--status-action-required-dot)", tint: "var(--status-action-required-tint)" },
       Interview:        { dot: "var(--status-interview-dot)",        tint: "var(--status-interview-tint)" },
       Offer:            { dot: "var(--status-offer-dot)",            tint: "var(--status-offer-tint)" },
-      Rejected:         { dot: "var(--status-rejected-dot)",         tint: "var(--status-rejected-tint)" }
+      Rejected:         { dot: "var(--status-rejected-dot)",         tint: "var(--status-rejected-tint)" },
+      Closed:           { dot: "var(--status-closed-dot)",           tint: "var(--status-closed-tint)" }
     };
-    const STATUS_ORDER = ["Applied", "Progress", "Action Required", "Interview", "Offer", "Rejected"];
+    const STATUS_ORDER = ["Applied", "Progress", "Action Required", "Interview", "Offer", "Rejected", "Closed"];
 
     // Fixed priority for sorting active (unconfirmed) AI suggestions to the
     // top of the list -- lower number sorts first. Applications without a
@@ -1053,7 +1056,8 @@
       "Interview Offered": 0,
       "Action Required": 1,
       "Progress": 2,
-      "Rejected": 3
+      "Rejected": 3,
+      "Closed": 4
     };
 
     const GMAIL_CONNECTED = {{ gmail_connected | tojson }};
@@ -1215,6 +1219,9 @@
         const safeUrl = safeApplicationUrl(a.url);
         const safeTitle = escapeHtml(a.title);
         const safeCompany = escapeHtml(a.company);
+        const timeline = a.hiring_end_date
+          ? `<div class="timeline-note">Role start / hiring end: ${formatDate(a.hiring_end_date)}</div>`
+          : "";
         const link = safeUrl
           ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">${safeTitle}</a>`
           : safeTitle;
@@ -1222,6 +1229,7 @@
           <td class="title-cell">
             <div class="title">${link}</div>
             <div class="company">${safeCompany}</div>
+            ${timeline}
           </td>
           <td>${badgeHtml(a.status)}</td>
           <td>${priorityBadgeHtml(a.priority_label)}</td>
@@ -1449,6 +1457,7 @@
         let searched = 0;
         let added = 0;
         let skippedDuplicates = 0;
+        let refreshedEmailLinks = 0;
         let filteredOut = 0;
         let fetchFailures = 0;
 
@@ -1474,6 +1483,7 @@
           searched += result.searched || 0;
           added += (result.added_applications || []).length;
           skippedDuplicates += result.skipped_duplicates || 0;
+          refreshedEmailLinks += result.refreshed_email_links || 0;
           filteredOut += result.filtered_out || 0;
           fetchFailures += result.fetch_failures || 0;
           pageToken = result.next_page_token || null;
@@ -1488,6 +1498,9 @@
         const duplicateText = skippedDuplicates
           ? ` ${skippedDuplicates} already tracked.`
           : "";
+        const refreshedLinkText = refreshedEmailLinks
+          ? ` ${refreshedEmailLinks} email link${refreshedEmailLinks === 1 ? "" : "s"} refreshed.`
+          : "";
         const filteredText = filteredOut
           ? ` ${filteredOut} unrelated or incomplete email${filteredOut === 1 ? "" : "s"} filtered out.`
           : "";
@@ -1495,8 +1508,8 @@
           ? ` ${fetchFailures} email${fetchFailures === 1 ? "" : "s"} could not be read.`
           : "";
         statusEl.textContent = added
-          ? `Added ${added} previous application${added === 1 ? "" : "s"}.${duplicateText}${filteredText}${fetchFailureText}`
-          : `No new previous applications found.${duplicateText}${filteredText}${fetchFailureText}`;
+          ? `Added ${added} previous application${added === 1 ? "" : "s"}.${duplicateText}${refreshedLinkText}${filteredText}${fetchFailureText}`
+          : `No new previous applications found.${duplicateText}${refreshedLinkText}${filteredText}${fetchFailureText}`;
         statusEl.className = "scan-status scan-status-success";
 
         await Promise.all([loadApplications(), loadFunnel()]);
@@ -1530,7 +1543,7 @@
     const FUNNEL_MIN_FOR_PREVIEW = 3;
 
     // Mirrors api.py's FUNNEL_STAGE_ORDER -- cosmetic display order only.
-    const FUNNEL_STAGE_ORDER = ["Offer", "Interview", "Progress", "Action Required", "Awaiting Response", "Rejected", "Ghosted"];
+    const FUNNEL_STAGE_ORDER = ["Offer", "Interview", "Progress", "Action Required", "Ghosted / Awaiting Response", "Rejected", "Closed"];
 
     // Reuses the exact same CSS custom properties as STATUS_META above (as
     // var() strings, not resolved hex) so the funnel's colors always match
@@ -1542,9 +1555,9 @@
       "Interview": "var(--status-interview-dot)",
       "Progress": "var(--status-progress-dot)",
       "Action Required": "var(--status-action-required-dot)",
-      "Awaiting Response": "var(--status-applied-dot)",
+      "Ghosted / Awaiting Response": "var(--status-ghosted-dot)",
       "Rejected": "var(--status-rejected-dot)",
-      "Ghosted": "var(--status-ghosted-dot)",
+      "Closed": "var(--status-closed-dot)",
     };
 
     let funnelData = null;
@@ -1604,7 +1617,8 @@
         <p class="funnel-summary-text">
           <strong>${total}</strong> application${total === 1 ? "" : "s"} tracked
           &middot; <strong>${summary.responded}</strong> responded
-          &middot; <strong>${summary.ghosted}</strong> ghosted
+          &middot; <strong>${summary.ghosted_or_awaiting_response}</strong> ghosted / awaiting response
+          &middot; <strong>${summary.closed}</strong> closed
         </p>
         <div class="funnel-bar">${barHtml}</div>
       `;

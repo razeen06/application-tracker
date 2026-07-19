@@ -16,6 +16,7 @@ class ApplicationStatus(Enum):
     APPLIED = "Applied"
     INTERVIEW = "Interview"
     REJECTED = "Rejected"
+    CLOSED = "Closed"
     OFFER = "Offer"
     # Added for AI-suggested status updates (see api.py's SUGGESTION_STATUS_MAP)
     # -- "Action Required" and "Progress" have no equivalent among the
@@ -94,13 +95,19 @@ class Application(db.Model):
     status = db.Column(db.Enum(ApplicationStatus), nullable=False, default=ApplicationStatus.APPLIED)
     flags = db.Column(db.Text)
     applied_date = db.Column(db.Date, default=date.today)
+    # The earliest reliable date after which an unresolved application can no
+    # longer progress: an explicit role/program start date or stated end of
+    # the hiring period. An application closing/deadline date is deliberately
+    # not stored here because applications already submitted before that date
+    # can remain under consideration afterward.
+    hiring_end_date = db.Column(db.Date, nullable=True)
     notes = db.Column(db.Text)
 
     # AI-suggested status update, sourced from a scanned Gmail message.
     # Non-authoritative -- sits alongside `status` until the user confirms it
     # (copies ai_suggested_status into status and clears these fields) or
     # ignores it. One of "Interview Offered", "Action Required", "Progress",
-    # "Rejected", or null if no suggestion is pending.
+    # "Rejected", "Closed", or null if no suggestion is pending.
     ai_suggested_status = db.Column(db.String(50), nullable=True)
     # Stores the Gmail thread ID used by the web deep link. The historical
     # column name is retained to avoid a destructive rename migration.
@@ -133,6 +140,7 @@ class Application(db.Model):
             "status": self.status.value if self.status else None,
             "flags": self.get_flags(),
             "applied_date": self.applied_date.isoformat() if self.applied_date else None,
+            "hiring_end_date": self.hiring_end_date.isoformat() if self.hiring_end_date else None,
             "notes": self.notes,
             "ai_suggested_status": self.ai_suggested_status,
             "ai_suggestion_source_email_id": self.ai_suggestion_source_email_id,

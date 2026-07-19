@@ -37,6 +37,30 @@ def refresh_access_token(refresh_token, client_id, client_secret):
     return access_token
 
 
+def get_profile_email(access_token):
+    """Return the mailbox address represented by a Gmail access token."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        response = requests.get(
+            f"{GMAIL_API_BASE}/profile",
+            headers=headers,
+            timeout=GMAIL_REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise GmailScanError(f"Gmail profile fetch failed: {e}")
+
+    if response.status_code != 200:
+        raise GmailScanError(
+            f"Gmail profile fetch failed: {response.status_code} {response.text}"
+        )
+
+    email_address = response.json().get("emailAddress")
+    if not isinstance(email_address, str) or not email_address.strip():
+        raise GmailScanError("Gmail profile response missing emailAddress")
+    return email_address.strip()
+
+
 def search_message_page(access_token, query, max_messages=100, page_token=None):
     """Return one bounded Gmail search page and its continuation token."""
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -189,6 +213,7 @@ def get_message_details(access_token, message_id):
     return {
         "id": message_id,
         "thread_id": data.get("threadId") or message_id,
+        "rfc_message_id": _extract_header(headers_list, "Message-ID"),
         "subject": _extract_header(headers_list, "Subject"),
         "sender": _extract_header(headers_list, "From"),
         "internal_date": int(data.get("internalDate") or 0),
